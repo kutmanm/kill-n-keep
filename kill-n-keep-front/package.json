@@ -1,0 +1,14 @@
+{
+  "name": "kill-n-keep-front",
+  "version": "1.0.0",
+  "main": "src/index.js",
+  "license": "MIT",
+  "dependencies": {
+    "phaser": "^3.16.2",
+    "phaser-scripts": "0.1.1"
+  },
+  "scripts": {
+    "start": "phaser-scripts start",
+    "build": "phaser-scripts build"
+  }
+}
