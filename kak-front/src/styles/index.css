@@ -1,0 +1,19 @@
+body {
+  margin: 0;
+  padding: 0;
+  background: #000;
+  font-family: 'Courier New', monospace;
+  overflow: hidden;
+}
+
+#game-container {
+  position: relative;
+  margin: 0 auto;
+  display: block;
+}
+
+canvas {
+  display: block;
+  margin: 0 auto;
+  cursor: pointer;
+}

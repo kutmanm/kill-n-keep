@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kill-n-Keep - Defend the Treasure</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background: #000;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            font-family: 'Courier New', monospace;
+            overflow: hidden;
+        }
+        #game-container {
+            position: relative;
+        }
+        canvas {
+            display: block;
+            border: 2px solid #333;
+        }
+        
+        /* Auth form styles */
+        .auth-form {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(44, 62, 80, 0.95);
+            border: 2px solid #95a5a6;
+            border-radius: 10px;
+            padding: 30px;
+            z-index: 1000;
+            display: none;
+        }
+        
+        .auth-form input {
+            width: 250px;
+            padding: 10px;
+            margin: 10px 0;
+            background: #2c3e50;
+            border: 1px solid #95a5a6;
+            border-radius: 5px;
+            color: #ecf0f1;
+            font-family: 'Courier New', monospace;
+            font-size: 14px;
+        }
+        
+        .auth-form input:focus {
+            outline: none;
+            border-color: #3498db;
+            box-shadow: 0 0 5px rgba(52, 152, 219, 0.5);
+        }
+        
+        .auth-form label {
+            color: #ecf0f1;
+            font-size: 16px;
+            display: block;
+            margin-top: 10px;
+        }
+        
+        .auth-form button {
+            padding: 10px 20px;
+            margin: 10px 5px;
+            background: #3498db;
+            border: none;
+            border-radius: 5px;
+            color: white;
+            font-family: 'Courier New', monospace;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        
+        .auth-form button:hover {
+            background: #2980b9;
+        }
+        
+        .auth-form button.register {
+            background: #27ae60;
+        }
+        
+        .auth-form button.register:hover {
+            background: #229954;
+        }
+        
+        .auth-message {
+            color: #e74c3c;
+            font-size: 12px;
+            margin-top: 10px;
+            text-align: center;
+        }
+        
+        .auth-message.success {
+            color: #27ae60;
+        }
+    </style>
+</head>
+<body>
+    <div id="game-container">
+        <!-- Auth Form Overlay -->
+        <div id="auth-form" class="auth-form">
+            <h2 style="color: #ecf0f1; text-align: center; margin-bottom: 20px;">KILL N' KEEP</h2>
+            
+            <label for="username">Username:</label>
+            <input type="text" id="username" placeholder="Enter username" maxlength="15">
+            
+            <label for="password">Password:</label>
+            <input type="password" id="password" placeholder="Enter password" maxlength="15">
+            
+            <div style="text-align: center; margin-top: 20px;">
+                <button id="login-btn">LOGIN</button>
+                <button id="register-btn" class="register">REGISTER</button>
+            </div>
+            
+            <div id="auth-message" class="auth-message"></div>
+        </div>
+    </div>
+</body>
+</html>
