@@ -6,6 +6,13 @@ import j from './test.json';
 import './styles/index.css';
 
 console.log(j);
+console.log('Kill-n-Keep Frontend starting...');
+
+// Basic app initialization
+document.addEventListener('DOMContentLoaded', function() {
+    const app = document.getElementById('app');
+    app.innerHTML = '<h1>Kill-n-Keep Game</h1><p>Frontend is running!</p>';
+});
 
 const config = {
   type: Phaser.AUTO,
