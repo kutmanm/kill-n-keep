@@ -4,6 +4,7 @@ import './styles/index.css';
 // API helper
 const API = {
   baseUrl: 'http://localhost:8081/api',
+  isOnline: true,
   
   async call(endpoint, method = 'GET', data = null) {
     const config = {
@@ -19,10 +20,55 @@ const API = {
     
     try {
       const response = await fetch(`${this.baseUrl}${endpoint}`, config);
-      return await response.json();
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+      const result = await response.json();
+      this.isOnline = true;
+      return result;
     } catch (error) {
       console.error('API call failed:', error);
-      return { success: false, message: 'Network error' };
+      this.isOnline = false;
+      
+      // Return mock responses for offline mode
+      return this.getMockResponse(endpoint, method, data);
+    }
+  },
+  
+  getMockResponse(endpoint, method, data) {
+    console.log('🔌 Backend unavailable - using offline mode');
+    
+    switch(endpoint) {
+      case '/game/start':
+        return { 
+          success: true, 
+          sessionId: 'offline-' + Date.now(),
+          message: 'Playing in offline mode' 
+        };
+      case '/session/complete':
+        // Save score to localStorage
+        const scores = JSON.parse(localStorage.getItem('kak_offline_scores') || '[]');
+        scores.push({
+          score: data.finalScore,
+          wave: data.finalWave,
+          date: new Date().toISOString(),
+          nickname: window.GameState.nickname
+        });
+        localStorage.setItem('kak_offline_scores', JSON.stringify(scores));
+        return { success: true };
+      default:
+        if (endpoint.includes('/leaderboard/')) {
+          const scores = JSON.parse(localStorage.getItem('kak_offline_scores') || '[]');
+          const sortedScores = scores.sort((a, b) => b.score - a.score).slice(0, 10);
+          return sortedScores.map((score, index) => ({
+            rank: index + 1,
+            username: score.nickname,
+            bestScore: score.score,
+            bestWave: score.wave,
+            level: 1
+          }));
+        }
+        return { success: false, message: 'Offline mode' };
     }
   },
   
@@ -533,64 +579,26 @@ class MenuScene extends Phaser.Scene {
       fontFamily: 'Courier New'
     }).setOrigin(0.5);
 
-    this.createNicknameInput();
     this.createClassSelection();
     this.createButtons();
   }
 
-  createNicknameInput() {
-    this.add.text(600, 170, 'Enter Your Nickname:', {
-      fontSize: '24px',
-      fill: '#ecf0f1',
-      fontFamily: 'Courier New'
-    }).setOrigin(0.5);
-
-    // Create HTML input for nickname
-    const nicknameInput = document.createElement('input');
-    nicknameInput.type = 'text';
-    nicknameInput.id = 'nickname-input';
-    nicknameInput.placeholder = 'Your nickname...';
-    nicknameInput.maxLength = 15;
-    nicknameInput.style.cssText = `
-      position: absolute;
-      left: 50%;
-      top: 210px;
-      transform: translateX(-50%);
-      width: 200px;
-      height: 30px;
-      font-family: 'Courier New', monospace;
-      font-size: 16px;
-      text-align: center;
-      border: 2px solid #3498db;
-      border-radius: 5px;
-      background: #2c3e50;
-      color: white;
-      z-index: 100;
-    `;
-    
-    document.getElementById('game-container').appendChild(nicknameInput);
-    this.nicknameInput = nicknameInput;
-    
-    // Focus the input
-    setTimeout(() => nicknameInput.focus(), 100);
-  }
-
   createClassSelection() {
-    this.add.text(600, 270, 'Choose Your Class:', {
+    this.add.text(600, 200, 'Choose Your Class:', {
       fontSize: '24px',
       fill: '#ecf0f1',
       fontFamily: 'Courier New'
     }).setOrigin(0.5);
 
     this.classButtons = [];
-    this.createClassButton(200, 350, 'KNIGHT', 'knight', 0xe74c3c, 
-      'Tank Fighter\nShield Bash\nHigh Health');
-    this.createClassButton(600, 350, 'ARCHER', 'archer', 0x27ae60,
-      'Ranged DPS\nArrow Storm\nHigh Speed');
-    this.createClassButton(1000, 350, 'MAGE', 'mage', 0x3498db,
-      'Magic DPS\nFrost Nova\nHigh Damage');
+    this.createClassButton(200, 300, 'KNIGHT', 'knight', 0xe74c3c, 
+      'Tank Fighter\nMelee Combat\nHigh Health');
+    this.createClassButton(600, 300, 'ARCHER', 'archer', 0x27ae60,
+      'Ranged DPS\nBow Shooting\nHigh Speed');
+    this.createClassButton(1000, 300, 'MAGE', 'mage', 0x3498db,
+      'Magic DPS\nFireball Magic\nHigh Damage');
 
-    this.add.text(600, 430, 'Controls: WASD = Move, Mouse Click = Attack, SPACE = Special Skill', {
+    this.add.text(600, 380, 'Controls: WASD = Move, Mouse Click = Attack, SPACE = Special Skill', {
       fontSize: '14px',
       fill: '#95a5a6',
       fontFamily: 'Courier New'
@@ -619,6 +627,8 @@ class MenuScene extends Phaser.Scene {
       
       this.classButtons.forEach(btn => btn.setStrokeStyle(0));
       button.setStrokeStyle(3, 0xffffff);
+      
+      console.log('Selected class:', className);
     });
 
     this.classButtons.push(button);
@@ -629,8 +639,8 @@ class MenuScene extends Phaser.Scene {
   }
 
   createButtons() {
-    const startButton = this.add.rectangle(600, 500, 200, 50, 0x2ecc71);
-    this.add.text(600, 500, 'START GAME', {
+    const startButton = this.add.rectangle(600, 450, 200, 50, 0x2ecc71);
+    this.add.text(600, 450, 'START GAME', {
       fontSize: '20px',
       fill: '#ffffff',
       fontFamily: 'Courier New'
@@ -639,8 +649,8 @@ class MenuScene extends Phaser.Scene {
     startButton.setInteractive({ useHandCursor: true });
     startButton.on('pointerdown', () => this.startGame());
 
-    const leaderboardButton = this.add.rectangle(400, 500, 150, 40, 0x3498db);
-    this.add.text(400, 500, 'LEADERBOARD', {
+    const leaderboardButton = this.add.rectangle(400, 450, 150, 40, 0x3498db);
+    this.add.text(400, 450, 'LEADERBOARD', {
       fontSize: '14px',
       fill: '#ffffff',
       fontFamily: 'Courier New'
@@ -652,36 +662,44 @@ class MenuScene extends Phaser.Scene {
     });
   }
 
-  async startGame() {
-    const nickname = this.nicknameInput.value.trim();
+  startGame() {
+    // Prevent multiple clicks
+    if (this.isStarting) return;
+    this.isStarting = true;
     
-    if (!nickname) {
-      alert('Please enter a nickname!');
-      return;
-    }
+    // Generate a simple nickname
+    window.GameState.nickname = 'Player' + Math.floor(Math.random() * 1000);
     
-    if (nickname.length < 2) {
-      alert('Nickname must be at least 2 characters!');
-      return;
-    }
+    console.log('Starting game with class:', window.GameState.selectedClass);
+    console.log('Player nickname:', window.GameState.nickname);
+    
+    // Show loading message
+    const loadingText = this.add.text(600, 500, 'Starting game...', {
+      fontSize: '16px',
+      fill: '#95a5a6',
+      fontFamily: 'Courier New'
+    }).setOrigin(0.5);
 
-    // Start game session
-    const response = await API.startGame(nickname);
-    
-    if (response.success) {
-      window.GameState.nickname = nickname;
-      window.GameState.sessionId = response.sessionId;
+    // Start game immediately without API call for now
+    this.time.delayedCall(500, () => {
+      window.GameState.sessionId = 'local-' + Date.now();
+      window.GameState.isOfflineMode = true;
       
-      // Remove nickname input
-      this.nicknameInput.remove();
+      // Reset game state
+      window.GameState.score = 0;
+      window.GameState.currentWave = 1;
+      window.GameState.treasureHealth = 100;
       
-      // Start game
-      this.scene.stop('MenuScene');
+      loadingText.destroy();
+      
+      // Start game scenes
       this.scene.start('GameScene');
       this.scene.launch('UIScene');
-    } else {
-      alert('Failed to start game: ' + response.message);
-    }
+    });
+  }
+
+  shutdown() {
+    this.isStarting = false;
   }
 }
 
@@ -693,6 +711,11 @@ class GameScene extends Phaser.Scene {
 
   create() {
     console.log('GameScene created with class:', window.GameState.selectedClass);
+    
+    // Ensure we have a selected class
+    if (!window.GameState.selectedClass) {
+      window.GameState.selectedClass = 'knight';
+    }
     
     // Reset game state
     window.GameState.score = 0;
@@ -716,50 +739,116 @@ class GameScene extends Phaser.Scene {
       skill: 0
     };
     
-    this.enemySpawnTimer = this.time.addEvent({
-      delay: 3000,
-      callback: this.spawnEnemy,
-      callbackScope: this,
-      loop: true
+    // Start enemy spawning after a short delay
+    this.time.delayedCall(2000, () => {
+      this.enemySpawnTimer = this.time.addEvent({
+        delay: 3000,
+        callback: this.spawnEnemy,
+        callbackScope: this,
+        loop: true
+      });
     });
+    
+    console.log('Game scene setup complete');
   }
 
   createSprites() {
     const graphics = this.add.graphics();
     
-    // Knight (blue square with cross)
-    graphics.fillStyle(0x3498db);
+    // Knight (redesigned with better armor and shield)
+    graphics.fillStyle(0x2c3e50); // Dark blue base
     graphics.fillRect(0, 0, 32, 32);
-    graphics.fillStyle(0xffffff);
-    graphics.fillRect(14, 8, 4, 16);
-    graphics.fillRect(8, 14, 16, 4);
+    graphics.fillStyle(0x3498db); // Bright blue armor
+    graphics.fillRect(2, 2, 28, 28);
+    graphics.fillStyle(0xbdc3c7); // Silver armor plates
+    graphics.fillRect(4, 4, 24, 24);
+    graphics.fillStyle(0xf39c12); // Golden trim
+    graphics.fillRect(0, 0, 32, 3);
+    graphics.fillRect(0, 29, 32, 3);
+    graphics.fillRect(0, 0, 3, 32);
+    graphics.fillRect(29, 0, 3, 32);
+    // Shield
+    graphics.fillStyle(0x95a5a6); // Silver shield
+    graphics.fillCircle(8, 16, 6);
+    graphics.fillStyle(0xe74c3c); // Red cross on shield
+    graphics.fillRect(6, 14, 4, 4);
+    graphics.fillRect(7, 13, 2, 6);
+    // Sword
+    graphics.fillStyle(0xbdc3c7); // Silver sword
+    graphics.fillRect(24, 6, 2, 20);
+    graphics.fillRect(22, 4, 6, 4); // Crossguard
     graphics.generateTexture('knight', 32, 32);
     
-    // Archer (green circle)
+    // Archer (green with bow)
     graphics.clear();
-    graphics.fillStyle(0x27ae60);
+    graphics.fillStyle(0x27ae60); // Green body
     graphics.fillCircle(16, 16, 16);
+    graphics.fillStyle(0x2d5a3d); // Dark green
+    graphics.fillCircle(16, 16, 12);
+    graphics.fillStyle(0x8b4513); // Brown bow
+    graphics.fillRect(6, 14, 20, 4);
+    graphics.fillRect(14, 6, 4, 20);
+    graphics.fillStyle(0xf1c40f); // Yellow arrow
+    graphics.fillTriangle(16, 8, 14, 12, 18, 12);
     graphics.generateTexture('archer', 32, 32);
     
-    // Mage (purple diamond)
+    // Mage (purple with diamond)
     graphics.clear();
-    graphics.fillStyle(0x9b59b6);
-    graphics.fillTriangle(16, 0, 0, 16, 16, 32);
-    graphics.fillTriangle(16, 0, 32, 16, 16, 32);
+    graphics.fillStyle(0x9b59b6); // Purple robe
+    graphics.fillTriangle(16, 2, 4, 30, 28, 30);
+    graphics.fillStyle(0x6c3483); // Dark purple
+    graphics.fillTriangle(16, 6, 8, 26, 24, 26);
+    graphics.fillStyle(0xf1c40f); // Golden diamond
+    graphics.fillTriangle(16, 8, 12, 16, 16, 24);
+    graphics.fillTriangle(16, 8, 20, 16, 16, 24);
+    graphics.fillStyle(0xe74c3c); // Red orb
+    graphics.fillCircle(16, 10, 3);
     graphics.generateTexture('mage', 32, 32);
     
-    // Enemy (red circle)
+    // Enemy (detailed orc)
     graphics.clear();
-    graphics.fillStyle(0xe74c3c);
+    graphics.fillStyle(0x8b4513); // Brown body
     graphics.fillCircle(12, 12, 12);
+    graphics.fillStyle(0xe74c3c); // Red eyes
+    graphics.fillCircle(8, 8, 2);
+    graphics.fillCircle(16, 8, 2);
+    graphics.fillStyle(0x2c3e50); // Dark weapon
+    graphics.fillRect(4, 16, 16, 4);
+    graphics.fillTriangle(20, 18, 24, 16, 24, 20);
     graphics.generateTexture('enemy', 24, 24);
     
-    // Treasure (gold)
+    // Treasure (detailed chest)
     graphics.clear();
-    graphics.fillStyle(0xf1c40f);
-    graphics.fillRect(16, 0, 32, 32);
+    graphics.fillStyle(0x8b4513); // Brown wood
     graphics.fillRect(0, 16, 64, 32);
+    graphics.fillStyle(0xf1c40f); // Gold
+    graphics.fillRect(4, 20, 56, 24);
+    graphics.fillStyle(0xd4af37); // Dark gold trim
+    graphics.fillRect(0, 16, 64, 4);
+    graphics.fillRect(0, 44, 64, 4);
+    graphics.fillRect(28, 24, 8, 8); // Lock
     graphics.generateTexture('treasure', 64, 64);
+    
+    // Projectiles
+    // Arrow
+    graphics.clear();
+    graphics.fillStyle(0x8b4513); // Brown shaft
+    graphics.fillRect(0, 6, 20, 4);
+    graphics.fillStyle(0xc0c0c0); // Silver tip
+    graphics.fillTriangle(20, 8, 24, 6, 24, 10);
+    graphics.fillStyle(0x228b22); // Green feathers
+    graphics.fillTriangle(0, 8, 4, 6, 4, 10);
+    graphics.generateTexture('arrow', 24, 16);
+    
+    // Fireball
+    graphics.clear();
+    graphics.fillStyle(0xff4500); // Orange fire
+    graphics.fillCircle(12, 12, 12);
+    graphics.fillStyle(0xffd700); // Yellow core
+    graphics.fillCircle(12, 12, 8);
+    graphics.fillStyle(0xff6347); // Red-orange middle
+    graphics.fillCircle(12, 12, 4);
+    graphics.generateTexture('fireball', 24, 24);
     
     graphics.destroy();
   }
@@ -771,7 +860,7 @@ class GameScene extends Phaser.Scene {
 
   createPlayer() {
     const className = window.GameState.selectedClass;
-    this.player = this.physics.add.sprite(600, 300, className);
+    this.player = this.physics.add.sprite(300, 300, className); // Start away from treasure
     this.player.setCollideWorldBounds(true);
     this.player.setDrag(300);
     
@@ -785,16 +874,16 @@ class GameScene extends Phaser.Scene {
         this.player.health = 150;
         this.player.maxHealth = 150;
         this.player.speed = 200;
-        this.player.damage = 30;
-        this.player.attackRange = 80;
-        this.player.skillCooldown = 3000;
+        this.player.damage = 35; // Increased damage
+        this.player.attackRange = 100; // Increased range
+        this.player.skillCooldown = 5000; // Longer cooldown for powerful skill
         break;
       case 'archer':
         this.player.health = 100;
         this.player.maxHealth = 100;
         this.player.speed = 250;
         this.player.damage = 25;
-        this.player.attackRange = 200;
+        this.player.attackRange = 300;
         this.player.skillCooldown = 2000;
         break;
       case 'mage':
@@ -802,7 +891,7 @@ class GameScene extends Phaser.Scene {
         this.player.maxHealth = 80;
         this.player.speed = 180;
         this.player.damage = 35;
-        this.player.attackRange = 150;
+        this.player.attackRange = 200;
         this.player.skillCooldown = 4000;
         break;
     }
@@ -826,7 +915,7 @@ class GameScene extends Phaser.Scene {
         this.mouseX = pointer.x;
         this.mouseY = pointer.y;
         this.playerAttack();
-        this.playerCooldowns.attack = 500;
+        this.playerCooldowns.attack = 300; // Faster attack speed
       }
     });
   }
@@ -860,6 +949,8 @@ class GameScene extends Phaser.Scene {
     this.handlePlayerMovement();
     this.handlePlayerActions();
     this.updateEnemies();
+    this.updateProjectiles();
+    this.updateAllyKnights();
   }
 
   handlePlayerMovement() {
@@ -894,10 +985,19 @@ class GameScene extends Phaser.Scene {
   }
 
   playerAttack() {
-    if (window.GameState.selectedClass === 'knight') {
-      this.knightMeleeAttack();
+    const className = window.GameState.selectedClass;
+    
+    switch(className) {
+      case 'knight':
+        this.knightMeleeAttack();
+        break;
+      case 'archer':
+        this.archerRangedAttack();
+        break;
+      case 'mage':
+        this.mageSpellAttack();
+        break;
     }
-    // Add other class attacks here
   }
 
   knightMeleeAttack() {
@@ -907,8 +1007,7 @@ class GameScene extends Phaser.Scene {
       this.mouseX, this.mouseY
     );
     
-    const arcAngle = Math.PI / 2;
-    let enemiesHit = 0;
+    const arcAngle = Math.PI / 1.5; // Wider attack arc
     
     this.enemies.children.entries.forEach(enemy => {
       if (!enemy || !enemy.active) return;
@@ -930,21 +1029,32 @@ class GameScene extends Phaser.Scene {
         
         if (Math.abs(angleDiff) <= arcAngle / 2) {
           this.damageEnemy(enemy, this.player.damage);
-          enemiesHit++;
         }
       }
     });
     
-    this.drawSwordArc(this.player.x, this.player.y, attackRange, mouseAngle - arcAngle / 2, mouseAngle + arcAngle / 2);
+    // Enhanced visual effect
+    this.drawSwordSlash(this.player.x, this.player.y, attackRange, mouseAngle, arcAngle);
   }
 
-  drawSwordArc(x, y, radius, startAngle, endAngle) {
+  drawSwordSlash(x, y, radius, mouseAngle, arcAngle) {
     const graphics = this.add.graphics();
     
-    graphics.lineStyle(6, 0xffffff, 0.9);
+    // Main sword arc
+    graphics.lineStyle(8, 0xffffff, 0.9);
     graphics.beginPath();
-    graphics.arc(x, y, radius, startAngle, endAngle);
+    graphics.arc(x, y, radius, mouseAngle - arcAngle / 2, mouseAngle + arcAngle / 2);
     graphics.strokePath();
+    
+    // Add sparkle effects
+    for (let i = 0; i < 5; i++) {
+      const sparkleAngle = mouseAngle - arcAngle / 2 + (arcAngle / 4) * i;
+      const sparkleX = x + (radius * 0.8) * Math.cos(sparkleAngle);
+      const sparkleY = y + (radius * 0.8) * Math.sin(sparkleAngle);
+      
+      const sparkle = this.add.circle(sparkleX, sparkleY, 3, 0xffff00, 0.8);
+      this.time.delayedCall(150, () => sparkle.destroy());
+    }
     
     this.time.delayedCall(200, () => {
       if (graphics && graphics.scene) {
@@ -953,8 +1063,315 @@ class GameScene extends Phaser.Scene {
     });
   }
 
+  archerRangedAttack() {
+    console.log('Archer shoots arrow!');
+    
+    const angle = Phaser.Math.Angle.Between(
+      this.player.x, this.player.y,
+      this.mouseX, this.mouseY
+    );
+    
+    const arrow = this.physics.add.sprite(this.player.x, this.player.y, 'arrow');
+    arrow.damage = this.player.damage;
+    arrow.rotation = angle;
+    arrow.setVelocity(
+      400 * Math.cos(angle),
+      400 * Math.sin(angle)
+    );
+    
+    this.projectiles.add(arrow);
+  }
+
+  mageSpellAttack() {
+    console.log('Mage casts fireball!');
+    
+    const angle = Phaser.Math.Angle.Between(
+      this.player.x, this.player.y,
+      this.mouseX, this.mouseY
+    );
+    
+    const fireball = this.physics.add.sprite(this.player.x, this.player.y, 'fireball');
+    fireball.damage = this.player.damage;
+    fireball.setVelocity(
+      300 * Math.cos(angle),
+      300 * Math.sin(angle)
+    );
+    
+    this.projectiles.add(fireball);
+  }
+
   playerSkill() {
-    // Add skill implementations here
+    const className = window.GameState.selectedClass;
+    console.log(`${className} uses ultimate skill!`);
+    
+    switch(className) {
+      case 'knight':
+        this.knightShieldBash();
+        break;
+      case 'archer':
+        this.archerArrowStorm();
+        break;
+      case 'mage':
+        this.mageFrostNova();
+        break;
+    }
+  }
+
+  knightShieldBash() {
+    console.log('Knight summons ally knights!');
+    
+    // Create 3 ally knights around the player
+    for (let i = 0; i < 3; i++) {
+      const angle = (i * Math.PI * 2) / 3;
+      const distance = 80;
+      const knightX = this.player.x + distance * Math.cos(angle);
+      const knightY = this.player.y + distance * Math.sin(angle);
+      
+      // Create ally knight sprite
+      const allyKnight = this.physics.add.sprite(knightX, knightY, 'knight');
+      allyKnight.setTint(0x00ff00); // Green tint to show it's an ally
+      allyKnight.setScale(0.8); // Slightly smaller
+      allyKnight.health = 50;
+      allyKnight.damage = 20;
+      allyKnight.attackRange = 60;
+      allyKnight.isAlly = true;
+      
+      // Store ally knights for updates
+      if (!this.allyKnights) {
+        this.allyKnights = this.add.group();
+      }
+      this.allyKnights.add(allyKnight);
+      
+      // Remove ally after 10 seconds
+      this.time.delayedCall(10000, () => {
+        if (allyKnight && allyKnight.active) {
+          // Fade out effect
+          this.tweens.add({
+            targets: allyKnight,
+            alpha: 0,
+            duration: 500,
+            onComplete: () => allyKnight.destroy()
+          });
+        }
+      });
+    }
+    
+    // Visual effect
+    const effect = this.add.circle(this.player.x, this.player.y, 120, 0x3498db, 0.3);
+    this.time.delayedCall(500, () => effect.destroy());
+  }
+
+  archerArrowStorm() {
+    console.log('Archer uses Arrow Storm!');
+    
+    // Shoot 8 arrows in all directions
+    for (let i = 0; i < 8; i++) {
+      const angle = (i * Math.PI * 2) / 8;
+      const arrow = this.physics.add.sprite(this.player.x, this.player.y, 'arrow');
+      arrow.damage = this.player.damage;
+      arrow.rotation = angle;
+      arrow.setVelocity(
+        350 * Math.cos(angle),
+        350 * Math.sin(angle)
+      );
+      
+      this.projectiles.add(arrow);
+    }
+  }
+
+  mageFrostNova() {
+    console.log('Mage uses Frost Nova!');
+    const novaRange = 150;
+    
+    this.enemies.children.entries.forEach(enemy => {
+      if (!enemy || !enemy.active) return;
+      
+      const distance = Phaser.Math.Distance.Between(
+        this.player.x, this.player.y,
+        enemy.x, enemy.y
+      );
+      
+      if (distance <= novaRange) {
+        this.damageEnemy(enemy, this.player.damage * 1.5);
+        
+        // Freeze effect
+        enemy.setTint(0x00bfff);
+        enemy.originalSpeed = enemy.speed;
+        enemy.speed = enemy.speed * 0.3;
+        
+        this.time.delayedCall(3000, () => {
+          if (enemy && enemy.active) {
+            enemy.clearTint();
+            enemy.speed = enemy.originalSpeed || 60;
+          }
+        });
+      }
+    });
+    
+    // Visual effect
+    const effect = this.add.circle(this.player.x, this.player.y, novaRange, 0x00bfff, 0.3);
+    this.time.delayedCall(500, () => effect.destroy());
+  }
+
+  update() {
+    if (!this.player) return;
+    
+    this.playerCooldowns.attack = Math.max(0, this.playerCooldowns.attack - this.game.loop.delta);
+    this.playerCooldowns.skill = Math.max(0, this.playerCooldowns.skill - this.game.loop.delta);
+    
+    this.handlePlayerMovement();
+    this.handlePlayerActions();
+    this.updateEnemies();
+    this.updateProjectiles();
+    this.updateAllyKnights();
+  }
+
+  updateAllyKnights() {
+    if (!this.allyKnights) return;
+    
+    this.allyKnights.children.entries.forEach(allyKnight => {
+      if (!allyKnight || !allyKnight.active) return;
+      
+      // Find nearest enemy
+      let nearestEnemy = null;
+      let nearestDistance = Infinity;
+      
+      this.enemies.children.entries.forEach(enemy => {
+        if (!enemy || !enemy.active) return;
+        
+        const distance = Phaser.Math.Distance.Between(
+          allyKnight.x, allyKnight.y,
+          enemy.x, enemy.y
+        );
+        
+        if (distance < nearestDistance) {
+          nearestDistance = distance;
+          nearestEnemy = enemy;
+        }
+      });
+      
+      if (nearestEnemy && nearestDistance < 200) {
+        // Move towards enemy
+        const angle = Phaser.Math.Angle.Between(
+          allyKnight.x, allyKnight.y,
+          nearestEnemy.x, nearestEnemy.y
+        );
+        
+        allyKnight.setVelocity(
+          120 * Math.cos(angle),
+          120 * Math.sin(angle)
+        );
+        
+        // Attack if close enough
+        if (nearestDistance < allyKnight.attackRange) {
+          // Attack cooldown check (store on sprite)
+          if (!allyKnight.lastAttack || this.time.now - allyKnight.lastAttack > 1000) {
+            this.damageEnemy(nearestEnemy, allyKnight.damage);
+            allyKnight.lastAttack = this.time.now;
+            
+            // Visual attack effect
+            const line = this.add.line(0, 0, allyKnight.x, allyKnight.y, nearestEnemy.x, nearestEnemy.y, 0xffffff);
+            line.setLineWidth(3);
+            this.time.delayedCall(100, () => line.destroy());
+          }
+        }
+      } else {
+        // No enemy nearby, follow player
+        const distanceToPlayer = Phaser.Math.Distance.Between(
+          allyKnight.x, allyKnight.y,
+          this.player.x, this.player.y
+        );
+        
+        if (distanceToPlayer > 100) {
+          const angle = Phaser.Math.Angle.Between(
+            allyKnight.x, allyKnight.y,
+            this.player.x, this.player.y
+          );
+          
+          allyKnight.setVelocity(
+            80 * Math.cos(angle),
+            80 * Math.sin(angle)
+          );
+        } else {
+          allyKnight.setVelocity(0, 0);
+        }
+      }
+    });
+  }
+
+  updateEnemies() {
+    const enemiesList = [...this.enemies.children.entries];
+    
+    enemiesList.forEach(enemy => {
+      if (!enemy || !enemy.active) return;
+      
+      // Move towards treasure
+      const treasureAngle = Phaser.Math.Angle.Between(
+        enemy.x, enemy.y,
+        this.treasure.x, this.treasure.y
+      );
+      
+      enemy.setVelocity(
+        enemy.speed * Math.cos(treasureAngle),
+        enemy.speed * Math.sin(treasureAngle)
+      );
+      
+      // Check collision with treasure
+      const treasureDistance = Phaser.Math.Distance.Between(
+        enemy.x, enemy.y,
+        this.treasure.x, this.treasure.y
+      );
+      
+      if (treasureDistance < 40) {
+        this.treasure.health -= 15;
+        enemy.destroy();
+        window.GameState.treasureHealth = this.treasure.health;
+        
+        if (this.treasure.health <= 0) {
+          this.gameOver();
+        }
+      }
+      
+      // Check collision with player
+      const playerDistance = Phaser.Math.Distance.Between(
+        enemy.x, enemy.y,
+        this.player.x, this.player.y
+      );
+      
+      if (playerDistance < 30) {
+        this.damagePlayer(10);
+        enemy.destroy();
+      }
+    });
+  }
+
+  updateProjectiles() {
+    const projectilesList = [...this.projectiles.children.entries];
+    
+    projectilesList.forEach(projectile => {
+      if (!projectile || !projectile.active) return;
+      
+      // Check collision with enemies
+      this.enemies.children.entries.forEach(enemy => {
+        if (!enemy || !enemy.active) return;
+        
+        const distance = Phaser.Math.Distance.Between(
+          projectile.x, projectile.y,
+          enemy.x, enemy.y
+        );
+        
+        if (distance < 20) {
+          this.damageEnemy(enemy, projectile.damage);
+          projectile.destroy();
+        }
+      });
+      
+      // Remove projectiles that are off-screen
+      if (projectile.x < -50 || projectile.x > 1250 || 
+          projectile.y < -50 || projectile.y > 650) {
+        projectile.destroy();
+      }
+    });
   }
 
   damageEnemy(enemy, damage) {
@@ -975,56 +1392,48 @@ class GameScene extends Phaser.Scene {
     }
   }
 
-  updateEnemies() {
-    const enemiesList = [...this.enemies.children.entries];
+  damagePlayer(damage) {
+    this.player.health -= damage;
+    window.GameState.playerHealth = this.player.health;
     
-    enemiesList.forEach(enemy => {
-      if (!enemy || !enemy.active) return;
-      
-      const angle = Phaser.Math.Angle.Between(
-        enemy.x, enemy.y,
-        this.treasure.x, this.treasure.y
-      );
-      
-      enemy.setVelocity(
-        enemy.speed * Math.cos(angle),
-        enemy.speed * Math.sin(angle)
-      );
-      
-      const distance = Phaser.Math.Distance.Between(
-        enemy.x, enemy.y,
-        this.treasure.x, this.treasure.y
-      );
-      
-      if (distance < 40) {
-        this.treasure.health -= 15;
-        enemy.destroy();
-        window.GameState.treasureHealth = this.treasure.health;
-        
-        if (this.treasure.health <= 0) {
-          this.gameOver();
-        }
+    // Visual damage effect
+    this.player.setTint(0xff0000);
+    this.time.delayedCall(200, () => {
+      if (this.player && this.player.active) {
+        this.player.clearTint();
       }
     });
+    
+    if (this.player.health <= 0) {
+      this.gameOver();
+    }
   }
 
   gameOver() {
+    console.log('Game Over triggered');
+    
     if (this.enemySpawnTimer) {
       this.enemySpawnTimer.destroy();
+      this.enemySpawnTimer = null;
     }
     
+    // Clean up ally knights
+    if (this.allyKnights) {
+      this.allyKnights.clear(true, true);
+    }
+    
+    this.input.enabled = false;
     this.physics.pause();
 
-    // Send score to backend
-    if (window.GameState.isLoggedIn && window.GameState.playerId) {
-      API.completeSession({
-        playerId: window.GameState.playerId,
-        finalScore: window.GameState.score,
-        finalWave: window.GameState.currentWave
-      }).then(response => {
-        console.log('Score saved:', response);
-      });
-    }
+    // Save score locally
+    const scores = JSON.parse(localStorage.getItem('kak_offline_scores') || '[]');
+    scores.push({
+      score: window.GameState.score,
+      wave: window.GameState.currentWave,
+      date: new Date().toISOString(),
+      nickname: window.GameState.nickname
+    });
+    localStorage.setItem('kak_offline_scores', JSON.stringify(scores));
     
     const overlay = this.add.rectangle(600, 300, 1200, 600, 0x000000, 0.8);
     
@@ -1040,38 +1449,49 @@ class GameScene extends Phaser.Scene {
       fontFamily: 'Courier New'
     }).setOrigin(0.5);
 
-    if (window.GameState.score > window.GameState.bestScore) {
-      this.add.text(600, 320, 'NEW RECORD!', {
-        fontSize: '20px',
-        fill: '#f1c40f',
-        fontFamily: 'Courier New'
-      }).setOrigin(0.5);
-      window.GameState.bestScore = window.GameState.score;
-    }
+    this.add.text(600, 310, 'Score saved locally', {
+      fontSize: '14px',
+      fill: '#f39c12',
+      fontFamily: 'Courier New'
+    }).setOrigin(0.5);
     
     const restartButton = this.add.rectangle(600, 420, 200, 50, 0x2ecc71);
-    this.add.text(600, 420, 'PLAY AGAIN', {
+    const restartText = this.add.text(600, 420, 'PLAY AGAIN', {
       fontSize: '20px',
       fill: '#ffffff',
       fontFamily: 'Courier New'
     }).setOrigin(0.5);
     
-    restartButton.setInteractive();
+    restartButton.setInteractive({ useHandCursor: true });
     restartButton.on('pointerdown', () => {
+      console.log('Restarting game');
+      
+      // Reset game state properly
+      window.GameState.score = 0;
+      window.GameState.currentWave = 1;
+      window.GameState.treasureHealth = 100;
+      
       this.scene.stop('UIScene');
       this.scene.restart();
       this.scene.launch('UIScene');
     });
 
     const menuButton = this.add.rectangle(600, 480, 200, 50, 0x3498db);
-    this.add.text(600, 480, 'MAIN MENU', {
+    const menuText = this.add.text(600, 480, 'MAIN MENU', {
       fontSize: '20px',
       fill: '#ffffff',
       fontFamily: 'Courier New'
     }).setOrigin(0.5);
     
-    menuButton.setInteractive();
+    menuButton.setInteractive({ useHandCursor: true });
     menuButton.on('pointerdown', () => {
+      console.log('Going to main menu');
+      
+      // Reset game state
+      window.GameState.score = 0;
+      window.GameState.currentWave = 1;
+      window.GameState.treasureHealth = 100;
+      
       this.scene.stop('UIScene');
       this.scene.stop('GameScene');
       this.scene.start('MenuScene');
@@ -1109,6 +1529,15 @@ class UIScene extends Phaser.Scene {
       fill: '#ffffff',
       fontFamily: 'Courier New'
     });
+
+    // Show offline mode indicator
+    if (window.GameState.isOfflineMode) {
+      this.offlineText = this.add.text(20, 120, 'OFFLINE MODE', {
+        fontSize: '12px',
+        fill: '#f39c12',
+        fontFamily: 'Courier New'
+      });
+    }
   }
 
   update() {
@@ -1141,7 +1570,7 @@ const config = {
       debug: false
     }
   },
-  scene: [PreloaderScene, MenuScene, LeaderboardScene]
+  scene: [PreloaderScene, LoginScene, LeaderboardScene, MenuScene, GameScene, UIScene]
 };
 
 window.game = new Phaser.Game(config);

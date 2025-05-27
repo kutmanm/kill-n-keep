@@ -52,6 +52,11 @@ export default class MenuScene extends Phaser.Scene {
 
     startButton.setInteractive();
     startButton.on('pointerdown', () => {
+      // Auto-generate nickname if none provided
+      if (!window.GameState.selectedClass) {
+        window.GameState.selectedClass = 'knight';
+      }
+      
       this.scene.start('GameScene');
       this.scene.start('UIScene');
     });
