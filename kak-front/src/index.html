@@ -97,6 +97,38 @@
         .auth-message.success {
             color: #27ae60;
         }
+        
+        /* Game settings panel */
+        .game-settings {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            background: rgba(44, 62, 80, 0.7);
+            border-radius: 5px;
+            padding: 5px;
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+            z-index: 10;
+        }
+        
+        .settings-btn {
+            width: 32px;
+            height: 32px;
+            background: none;
+            border: none;
+            color: white;
+            cursor: pointer;
+            font-size: 18px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        .settings-btn:hover {
+            background: rgba(255, 255, 255, 0.2);
+            border-radius: 4px;
+        }
     </style>
 </head>
 <body>
@@ -118,6 +150,45 @@
             
             <div id="auth-message" class="auth-message"></div>
         </div>
+        
+        <!-- Game Settings Panel -->
+        <div id="game-settings" class="game-settings">
+            <button id="sound-toggle" class="settings-btn" title="Toggle Sound">🔊</button>
+            <button id="effects-toggle" class="settings-btn" title="Toggle Effects">✨</button>
+            <button id="fullscreen-toggle" class="settings-btn" title="Toggle Fullscreen">⛶</button>
+        </div>
     </div>
+    
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            const soundToggle = document.getElementById('sound-toggle');
+            const effectsToggle = document.getElementById('effects-toggle');
+            const fullscreenToggle = document.getElementById('fullscreen-toggle');
+            
+            soundToggle.addEventListener('click', () => {
+                if (window.GameState) {
+                    window.GameState.soundEnabled = !window.GameState.soundEnabled;
+                    soundToggle.textContent = window.GameState.soundEnabled ? '🔊' : '🔇';
+                }
+            });
+            
+            effectsToggle.addEventListener('click', () => {
+                if (window.GameState) {
+                    window.GameState.showEffects = !window.GameState.showEffects;
+                    effectsToggle.textContent = window.GameState.showEffects ? '✨' : '❌';
+                }
+            });
+            
+            fullscreenToggle.addEventListener('click', () => {
+                if (window.game && window.game.scale) {
+                    if (window.game.scale.isFullscreen) {
+                        window.game.scale.stopFullscreen();
+                    } else {
+                        window.game.scale.startFullscreen();
+                    }
+                }
+            });
+        });
+    </script>
 </body>
 </html>

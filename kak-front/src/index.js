@@ -1,41 +1,98 @@
 import Phaser from 'phaser';
 import './styles/index.css';
 
-// Global game state
+// API helper
+const API = {
+  baseUrl: 'http://localhost:8081/api',
+  
+  async call(endpoint, method = 'GET', data = null) {
+    const config = {
+      method,
+      headers: {
+        'Content-Type': 'application/json',
+      },
+    };
+    
+    if (data) {
+      config.body = JSON.stringify(data);
+    }
+    
+    try {
+      const response = await fetch(`${this.baseUrl}${endpoint}`, config);
+      return await response.json();
+    } catch (error) {
+      console.error('API call failed:', error);
+      return { success: false, message: 'Network error' };
+    }
+  },
+  
+  // Game API endpoints
+  startGame(nickname) {
+    return this.call('/game/start', 'POST', { nickname });
+  },
+  
+  getNextWave(wave) {
+    return this.call(`/waves/next?wave=${wave}`);
+  },
+  
+  playerAction(action) {
+    return this.call('/player/action', 'POST', action);
+  },
+  
+  completeSession(sessionData) {
+    return this.call('/session/complete', 'POST', sessionData);
+  },
+  
+  getLeaderboard(type = 'score', limit = 10) {
+    return this.call(`/leaderboard/${type}?limit=${limit}`);
+  }
+};
+
+// Game State
 window.GameState = {
+  // Player info
+  nickname: null,
+  sessionId: null,
+  selectedClass: 'knight',
+  
+  // Game state
   currentWave: 1,
   score: 0,
   playerHealth: 100,
   treasureHealth: 100,
-  selectedClass: 'knight',
-  gameSession: null,
-  // Auth state
-  isLoggedIn: false,
-  playerId: null,
-  username: null,
-  playerLevel: 1,
-  bestScore: 0
+  enemiesKilled: 0,
+  
+  // Wave system
+  waveInProgress: false,
+  waveTimer: 0,
+  difficulty: 1.0,
+  waveEnemies: [],
+  
+  // Game settings
+  showEffects: true,
+  soundEnabled: true,
+  
+  // Session tracking
+  sessionStartTime: null
 };
 
-// API helper functions
-function apiCall(endpoint, method = 'GET', data = null) {
-  const config = {
-    method,
-    headers: {
-      'Content-Type': 'application/json',
-    },
-  };
-  
-  if (data) {
-    config.body = JSON.stringify(data);
+// Preloader Scene
+class PreloaderScene extends Phaser.Scene {
+  constructor() {
+    super({ key: 'PreloaderScene' });
   }
-  
-  return fetch(`http://localhost:8081/api${endpoint}`, config)
-    .then(response => response.json())
-    .catch(error => {
-      console.error('API call failed:', error);
-      return { success: false, message: 'Network error' };
+
+  preload() {
+    this.load.image('logo', 'assets/logo.png');
+  }
+
+  create() {
+    this.add.text(400, 200, 'Loading...', { fontSize: '32px', fill: '#ffffff' });
+    
+    this.time.delayedCall(1000, () => {
+      this.scene.start('MenuScene');
     });
+  }
 }
 
 // Login Scene
@@ -151,7 +208,7 @@ class LoginScene extends Phaser.Scene {
     this.authElements.registerBtn.disabled = true;
     this.showMessage('Logging in...');
 
-    apiCall('/auth/login', 'POST', {
+    API.call('/auth/login', 'POST', {
       username: username,
       password: password
     }).then(response => {
@@ -212,7 +269,7 @@ class LoginScene extends Phaser.Scene {
     this.authElements.registerBtn.disabled = true;
     this.showMessage('Creating account...');
 
-    apiCall('/auth/register', 'POST', {
+    API.call('/auth/register', 'POST', {
       username: username,
       password: password,
       email: `${username}@killnkeep.com`
@@ -396,7 +453,7 @@ class LeaderboardScene extends Phaser.Scene {
     }).setOrigin(0.5);
 
     // Fetch leaderboard data
-    apiCall(`/leaderboard/${type}?limit=10`).then(response => {
+    API.getLeaderboard(type, 10).then(response => {
       loadingText.destroy();
 
       if (response && Array.isArray(response)) {
@@ -460,143 +517,171 @@ class MenuScene extends Phaser.Scene {
   create() {
     console.log('MenuScene created');
     
-    // Check auth
-    if (!window.GameState.isLoggedIn) {
-      this.scene.start('LoginScene');
-      return;
-    }
-    
     // Background
     this.add.rectangle(600, 300, 1200, 600, 0x1a252f);
     
     // Title
-    this.add.text(600, 100, 'KILL N\' KEEP', {
+    this.add.text(600, 80, 'KILL N\' KEEP', {
       fontSize: '48px',
       fill: '#ecf0f1',
       fontFamily: 'Courier New'
     }).setOrigin(0.5);
     
-    this.add.text(600, 140, 'Defend the Treasure! (Top-Down View)', {
+    this.add.text(600, 120, 'Defend the Treasure!', {
       fontSize: '20px',
       fill: '#95a5a6',
       fontFamily: 'Courier New'
     }).setOrigin(0.5);
 
-    // Player info
-    this.add.text(600, 180, `Player: ${window.GameState.username} | Level: ${window.GameState.playerLevel} | Best: ${window.GameState.bestScore}`, {
-      fontSize: '16px',
-      fill: '#3498db',
-      fontFamily: 'Courier New'
-    }).setOrigin(0.5);
-
+    this.createNicknameInput();
     this.createClassSelection();
     this.createButtons();
   }
 
+  createNicknameInput() {
+    this.add.text(600, 170, 'Enter Your Nickname:', {
+      fontSize: '24px',
+      fill: '#ecf0f1',
+      fontFamily: 'Courier New'
+    }).setOrigin(0.5);
+
+    // Create HTML input for nickname
+    const nicknameInput = document.createElement('input');
+    nicknameInput.type = 'text';
+    nicknameInput.id = 'nickname-input';
+    nicknameInput.placeholder = 'Your nickname...';
+    nicknameInput.maxLength = 15;
+    nicknameInput.style.cssText = `
+      position: absolute;
+      left: 50%;
+      top: 210px;
+      transform: translateX(-50%);
+      width: 200px;
+      height: 30px;
+      font-family: 'Courier New', monospace;
+      font-size: 16px;
+      text-align: center;
+      border: 2px solid #3498db;
+      border-radius: 5px;
+      background: #2c3e50;
+      color: white;
+      z-index: 100;
+    `;
+    
+    document.getElementById('game-container').appendChild(nicknameInput);
+    this.nicknameInput = nicknameInput;
+    
+    // Focus the input
+    setTimeout(() => nicknameInput.focus(), 100);
+  }
+
   createClassSelection() {
-    // Class selection
-    this.add.text(600, 250, 'Choose Your Class:', {
-      fontSize: '28px',
+    this.add.text(600, 270, 'Choose Your Class:', {
+      fontSize: '24px',
       fill: '#ecf0f1',
       fontFamily: 'Courier New'
     }).setOrigin(0.5);
 
     this.classButtons = [];
-
-    // Class buttons
     this.createClassButton(200, 350, 'KNIGHT', 'knight', 0xe74c3c, 
-      'Melee Fighter\nShield Bash\nHigh Health');
+      'Tank Fighter\nShield Bash\nHigh Health');
     this.createClassButton(600, 350, 'ARCHER', 'archer', 0x27ae60,
-      'Ranged Attacker\nArrow Storm\nHigh Speed');
+      'Ranged DPS\nArrow Storm\nHigh Speed');
     this.createClassButton(1000, 350, 'MAGE', 'mage', 0x3498db,
-      'Spell Caster\nFrost Nova\nHigh Damage');
+      'Magic DPS\nFrost Nova\nHigh Damage');
 
-    // Controls
-    this.add.text(600, 450, 'Controls: WASD/Arrows = Move, Mouse Click = Attack, SPACE = Special Skill', {
-      fontSize: '16px',
+    this.add.text(600, 430, 'Controls: WASD = Move, Mouse Click = Attack, SPACE = Special Skill', {
+      fontSize: '14px',
       fill: '#95a5a6',
       fontFamily: 'Courier New'
     }).setOrigin(0.5);
   }
 
   createClassButton(x, y, name, className, color, description) {
-    const button = this.add.rectangle(x, y, 180, 120, color);
-    const text = this.add.text(x, y - 30, name, {
-      fontSize: '18px',
+    const button = this.add.rectangle(x, y, 160, 100, color);
+    const text = this.add.text(x, y - 25, name, {
+      fontSize: '16px',
       fill: '#ffffff',
       fontFamily: 'Courier New'
     }).setOrigin(0.5);
 
-    const desc = this.add.text(x, y + 15, description, {
-      fontSize: '12px',
+    const desc = this.add.text(x, y + 10, description, {
+      fontSize: '10px',
       fill: '#ffffff',
       fontFamily: 'Courier New',
       align: 'center'
     }).setOrigin(0.5);
 
     button.setInteractive({ useHandCursor: true });
-    button.setData('className', className);
     
     button.on('pointerdown', () => {
       window.GameState.selectedClass = className;
       
-      this.classButtons.forEach(btn => {
-        btn.setStrokeStyle(0);
-      });
-      
-      button.setStrokeStyle(4, 0xffffff);
+      this.classButtons.forEach(btn => btn.setStrokeStyle(0));
+      button.setStrokeStyle(3, 0xffffff);
     });
 
     this.classButtons.push(button);
     
     if (className === 'knight') {
-      button.setStrokeStyle(4, 0xffffff);
+      button.setStrokeStyle(3, 0xffffff);
     }
   }
 
   createButtons() {
-    // Start button
-    const startButton = this.add.rectangle(600, 520, 200, 50, 0x2ecc71);
-    this.add.text(600, 520, 'START GAME', {
+    const startButton = this.add.rectangle(600, 500, 200, 50, 0x2ecc71);
+    this.add.text(600, 500, 'START GAME', {
       fontSize: '20px',
       fill: '#ffffff',
       fontFamily: 'Courier New'
     }).setOrigin(0.5);
 
     startButton.setInteractive({ useHandCursor: true });
-    startButton.on('pointerdown', () => {
-      this.scene.stop('MenuScene');
-      this.scene.start('GameScene');
-      this.scene.launch('UIScene');
-    });
+    startButton.on('pointerdown', () => this.startGame());
 
-    // Leaderboard button
-    const leaderboardButton = this.add.rectangle(400, 520, 150, 40, 0x3498db);
-    this.add.text(400, 520, 'LEADERBOARD', {
-      fontSize: '16px',
+    const leaderboardButton = this.add.rectangle(400, 500, 150, 40, 0x3498db);
+    this.add.text(400, 500, 'LEADERBOARD', {
+      fontSize: '14px',
       fill: '#ffffff',
       fontFamily: 'Courier New'
     }).setOrigin(0.5);
 
-    leaderboardButton.setInteractive();
+    leaderboardButton.setInteractive({ useHandCursor: true });
     leaderboardButton.on('pointerdown', () => {
       this.scene.start('LeaderboardScene');
     });
+  }
 
-    // Logout button
-    const logoutButton = this.add.rectangle(800, 520, 100, 40, 0xe74c3c);
-    this.add.text(800, 520, 'LOGOUT', {
-      fontSize: '16px',
-      fill: '#ffffff',
-      fontFamily: 'Courier New'
-    }).setOrigin(0.5);
+  async startGame() {
+    const nickname = this.nicknameInput.value.trim();
+    
+    if (!nickname) {
+      alert('Please enter a nickname!');
+      return;
+    }
+    
+    if (nickname.length < 2) {
+      alert('Nickname must be at least 2 characters!');
+      return;
+    }
 
-    logoutButton.setInteractive();
-    logoutButton.on('pointerdown', () => {
-      localStorage.removeItem('killnkeep_auth');
-      window.GameState.isLoggedIn = false;
-      this.scene.start('LoginScene');
-    });
+    // Start game session
+    const response = await API.startGame(nickname);
+    
+    if (response.success) {
+      window.GameState.nickname = nickname;
+      window.GameState.sessionId = response.sessionId;
+      
+      // Remove nickname input
+      this.nicknameInput.remove();
+      
+      // Start game
+      this.scene.stop('MenuScene');
+      this.scene.start('GameScene');
+      this.scene.launch('UIScene');
+    } else {
+      alert('Failed to start game: ' + response.message);
+    }
   }
 }
 
@@ -932,7 +1017,7 @@ class GameScene extends Phaser.Scene {
 
     // Send score to backend
     if (window.GameState.isLoggedIn && window.GameState.playerId) {
-      apiCall('/session/complete', 'POST', {
+      API.completeSession({
         playerId: window.GameState.playerId,
         finalScore: window.GameState.score,
         finalWave: window.GameState.currentWave
@@ -1056,10 +1141,8 @@ const config = {
       debug: false
     }
   },
-  scene: [LoginScene, LeaderboardScene, MenuScene, GameScene, UIScene]
+  scene: [PreloaderScene, MenuScene, LeaderboardScene]
 };
 
-// Initialize the game
-const game = new Phaser.Game(config);
-
-console.log('Kill-n-Keep game with auth system initialized!');
+window.game = new Phaser.Game(config);
+console.log('Kill-n-Keep game initialized!');
