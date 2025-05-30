@@ -7,6 +7,11 @@ const API = {
   isOnline: true,
   
   async call(endpoint, method = 'GET', data = null) {
+    // If we're already in offline mode, don't try API calls
+    if (!this.isOnline && !endpoint.includes('/auth/')) {
+      return this.getMockResponse(endpoint, method, data);
+    }
+    
     const config = {
       method,
       headers: {
@@ -45,6 +50,60 @@ const API = {
           sessionId: 'offline-' + Date.now(),
           message: 'Playing in offline mode' 
         };
+      case '/wave/start':
+        // Mock wave data generation
+        const waveNumber = data.currentWave || 1;
+        const baseEnemies = 3;
+        const enemyCount = baseEnemies + (waveNumber - 1) * 2;
+        const hasBoss = waveNumber % 5 === 0;
+        
+        const enemies = [];
+        // Generate regular enemies
+        for (let i = 0; i < enemyCount; i++) {
+          enemies.push({
+            type: 'enemy',
+            health: 20 + (waveNumber * 5),
+            speed: 50 + (waveNumber * 5),
+            damage: 15,
+            spawnDelay: i * 1000
+          });
+        }
+        
+        // Add boss if needed
+        if (hasBoss) {
+          enemies.push({
+            type: 'boss',
+            health: 200 + (waveNumber * 50),
+            speed: 40 + (waveNumber * 3),
+            damage: 30 + (waveNumber * 5),
+            spawnDelay: enemyCount * 1000 + 2000
+          });
+        }
+        
+        return {
+          success: true,
+          waveInfo: {
+            waveNumber: waveNumber,
+            enemyCount: enemyCount,
+            spawnDelay: Math.max(800, 2000 - (waveNumber * 100)),
+            hasBoss: hasBoss,
+            preparationTime: 3000,
+            enemies: enemies
+          }
+        };
+      case '/wave/enemy-spawned':
+        return { success: true, enemiesSpawned: 1 };
+      case '/wave/enemy-killed':
+        const scoreGain = data.enemyType === 'boss' ? 200 + (data.currentWave * 20) : 10 + data.currentWave;
+        return { success: true, scoreGain: scoreGain, enemiesKilled: 1 };
+      case '/wave/complete':
+        const waveBonus = data.waveNumber * 50;
+        return { 
+          success: true, 
+          waveBonus: waveBonus,
+          nextWave: data.waveNumber + 1,
+          totalScore: (window.GameState.score || 0) + waveBonus
+        };
       case '/session/complete':
         // Save score to localStorage
         const scores = JSON.parse(localStorage.getItem('kak_offline_scores') || '[]');
@@ -68,6 +127,22 @@ const API = {
             level: 1
           }));
         }
+        if (endpoint.includes('/session/') && endpoint.includes('/status')) {
+          return {
+            success: true,
+            session: {
+              nickname: window.GameState.nickname,
+              score: window.GameState.score,
+              wave: window.GameState.currentWave
+            },
+            wave: {
+              currentWave: window.GameState.currentWave,
+              waveActive: false,
+              enemiesSpawned: 0,
+              enemiesKilled: 0
+            }
+          };
+        }
         return { success: false, message: 'Offline mode' };
     }
   },
@@ -77,12 +152,24 @@ const API = {
     return this.call('/game/start', 'POST', { nickname });
   },
   
-  getNextWave(wave) {
-    return this.call(`/waves/next?wave=${wave}`);
+  startWave(sessionId, currentWave) {
+    return this.call('/wave/start', 'POST', { sessionId, currentWave });
   },
   
-  playerAction(action) {
-    return this.call('/player/action', 'POST', action);
+  enemySpawned(sessionId) {
+    return this.call('/wave/enemy-spawned', 'POST', { sessionId });
+  },
+  
+  enemyKilled(sessionId, enemyType, currentWave) {
+    return this.call('/wave/enemy-killed', 'POST', { sessionId, enemyType, currentWave });
+  },
+  
+  completeWave(sessionId, waveNumber) {
+    return this.call('/wave/complete', 'POST', { sessionId, waveNumber });
+  },
+  
+  getSessionStatus(sessionId) {
+    return this.call(`/session/${sessionId}/status`);
   },
   
   completeSession(sessionData) {
@@ -656,7 +743,7 @@ class LeaderboardScene extends Phaser.Scene {
 
     backButton.setInteractive();
     backButton.on('pointerdown', () => {
-      this.scene.start('LoginScene');
+      this.scene.start('MenuScene');
     });
   }
 
@@ -1110,8 +1197,28 @@ class MenuScene extends Phaser.Scene {
       fontFamily: 'Courier New'
     }).setOrigin(0.5);
 
-    // Start game immediately without API call for now
-    this.time.delayedCall(500, () => {
+    // Try to start game with backend first
+    API.startGame(window.GameState.nickname).then(response => {
+      if (response.success) {
+        window.GameState.sessionId = response.sessionId;
+        window.GameState.isOfflineMode = !API.isOnline;
+      } else {
+        window.GameState.sessionId = 'local-' + Date.now();
+        window.GameState.isOfflineMode = true;
+      }
+      
+      // Reset game state
+      window.GameState.score = 0;
+      window.GameState.currentWave = 1;
+      window.GameState.treasureHealth = 100;
+      
+      loadingText.destroy();
+      
+      // Start game scenes
+      this.scene.start('GameScene');
+      this.scene.launch('UIScene');
+    }).catch(error => {
+      console.error('Failed to start game session:', error);
       window.GameState.sessionId = 'local-' + Date.now();
       window.GameState.isOfflineMode = true;
       
@@ -1155,6 +1262,15 @@ class GameScene extends Phaser.Scene {
     
     this.input.enabled = true;
     
+    // Wave system variables
+    this.waveActive = false;
+    this.wavePrepTime = 3000; // 3 seconds to prepare
+    this.waveEnemiesRemaining = 0;
+    this.waveEnemiesSpawned = 0;
+    this.waveTargetEnemies = 0;
+    this.currentWaveSpawnDelay = 2000;
+    this.betweenWaveTime = 0;
+    
     this.createSprites();
     this.createKnightAnimations();
     this.createWorld();
@@ -1171,254 +1287,157 @@ class GameScene extends Phaser.Scene {
       skill: 0
     };
     
-    // Start enemy spawning after a short delay
+    // Start first wave after a short delay
     this.time.delayedCall(2000, () => {
-      this.enemySpawnTimer = this.time.addEvent({
-        delay: 3000,
-        callback: this.spawnEnemy,
-        callbackScope: this,
-        loop: true
-      });
+      this.startWave();
     });
     
     console.log('Game scene setup complete');
   }
 
-  createKnightAnimations() {
-    // Only create animations if they don't already exist
-    const animsManager = this.anims;
-    
-    // KNIGHT animations
-    if (!animsManager.exists('knight-idle-anim')) {
-      this.anims.create({
-        key: 'knight-idle-anim',
-        frames: [{ key: 'knight-idle', frame: 0 }],
-        frameRate: 8,
-        repeat: -1
-      });
-    }
-    
-    if (!animsManager.exists('knight-walk-anim')) {
-      this.anims.create({
-        key: 'knight-walk-anim',
-        frames: [{ key: 'knight-walk', frame: 0 }],
-        frameRate: 10,
-        repeat: -1
-      });
-    }
-    
-    if (!animsManager.exists('knight-run-anim')) {
-      this.anims.create({
-        key: 'knight-run-anim',
-        frames: [{ key: 'knight-run', frame: 0 }],
-        frameRate: 12,
-        repeat: -1
-      });
-    }
-    
-    if (!animsManager.exists('knight-attack1-anim')) {
-      this.anims.create({
-        key: 'knight-attack1-anim',
-        frames: [{ key: 'knight-attack1', frame: 0 }],
-        frameRate: 12,
-        repeat: 0
-      });
-    }
-    
-    if (!animsManager.exists('knight-attack2-anim')) {
-      this.anims.create({
-        key: 'knight-attack2-anim',
-        frames: [{ key: 'knight-attack2', frame: 0 }],
-        frameRate: 12,
-        repeat: 0
-      });
-    }
-    
-    if (!animsManager.exists('knight-attack3-anim')) {
-      this.anims.create({
-        key: 'knight-attack3-anim',
-        frames: [{ key: 'knight-attack3', frame: 0 }],
-        frameRate: 12,
-        repeat: 0
-      });
-    }
-    
-    // ARCHER animations
-    if (!animsManager.exists('archer-idle-anim')) {
-      this.anims.create({
-        key: 'archer-idle-anim',
-        frames: [{ key: 'archer-idle', frame: 0 }],
-        frameRate: 8,
-        repeat: -1
-      });
-    }
-    
-    if (!animsManager.exists('archer-walk-anim')) {
-      this.anims.create({
-        key: 'archer-walk-anim',
-        frames: [{ key: 'archer-walk', frame: 0 }],
-        frameRate: 10,
-        repeat: -1
-      });
-    }
-    
-    if (!animsManager.exists('archer-run-anim')) {
-      this.anims.create({
-        key: 'archer-run-anim',
-        frames: [{ key: 'archer-run', frame: 0 }],
-        frameRate: 12,
-        repeat: -1
-      });
-    }
-    
-    if (!animsManager.exists('archer-attack1-anim')) {
-      this.anims.create({
-        key: 'archer-attack1-anim',
-        frames: [{ key: 'archer-attack1', frame: 0 }],
-        frameRate: 12,
-        repeat: 0
-      });
-    }
-    
-    if (!animsManager.exists('archer-skill-anim')) {
-      this.anims.create({
-        key: 'archer-skill-anim',
-        frames: [{ key: 'archer-skill', frame: 0 }],
-        frameRate: 10,
-        repeat: 0
-      });
-    }
-    
-    // MAGE animations
-    if (!animsManager.exists('mage-idle-anim')) {
-      this.anims.create({
-        key: 'mage-idle-anim',
-        frames: [{ key: 'mage-idle', frame: 0 }],
-        frameRate: 8,
-        repeat: -1
-      });
-    }
-    
-    if (!animsManager.exists('mage-walk-anim')) {
-      this.anims.create({
-        key: 'mage-walk-anim',
-        frames: [{ key: 'mage-walk', frame: 0 }],
-        frameRate: 10,
-        repeat: -1
-      });
-    }
-    
-    if (!animsManager.exists('mage-run-anim')) {
-      this.anims.create({
-        key: 'mage-run-anim',
-        frames: [{ key: 'mage-run', frame: 0 }],
-        frameRate: 12,
-        repeat: -1
-      });
-    }
-    
-    if (!animsManager.exists('mage-attack1-anim')) {
-      this.anims.create({
-        key: 'mage-attack1-anim',
-        frames: [{ key: 'mage-attack1', frame: 0 }],
-        frameRate: 12,
-        repeat: 0
-      });
-    }
-    
-    if (!animsManager.exists('mage-skill-anim')) {
-      this.anims.create({
-        key: 'mage-skill-anim',
-        frames: [{ key: 'mage-skill', frame: 0 }],
-        frameRate: 10,
-        repeat: 0
-      });
-    }
-  }
-
   createSprites() {
     const graphics = this.add.graphics();
     
-    // For archer and mage, keep the existing generated sprites
-    // Archer (green with bow)
-    graphics.fillStyle(0x27ae60);
-    graphics.fillCircle(16, 16, 16);
-    graphics.fillStyle(0x2d5a3d);
+    // Create ENEMY sprite (red circle)
+    graphics.fillStyle(0xff0000);
     graphics.fillCircle(16, 16, 12);
-    graphics.fillStyle(0x8b4513);
-    graphics.fillRect(6, 14, 20, 4);
-    graphics.fillRect(14, 6, 4, 20);
-    graphics.fillStyle(0xf1c40f);
-    graphics.fillTriangle(16, 8, 14, 12, 18, 12);
-    graphics.generateTexture('archer', 32, 32);
+    graphics.generateTexture('enemy', 32, 32);
     
-    // Enemy (detailed orc)
+    // Create BOSS sprite (larger red circle with black outline)
     graphics.clear();
-    graphics.fillStyle(0x8b4513); // Brown body
-    graphics.fillCircle(12, 12, 12);
-    graphics.fillStyle(0xe74c3c); // Red eyes
-    graphics.fillCircle(8, 8, 2);
-    graphics.fillCircle(16, 8, 2);
-    graphics.fillStyle(0x2c3e50); // Dark weapon
-    graphics.fillRect(4, 16, 16, 4);
-    graphics.fillTriangle(20, 18, 24, 16, 24, 20);
-    graphics.generateTexture('enemy', 24, 24);
+    graphics.fillStyle(0x000000);
+    graphics.fillCircle(24, 24, 20);
+    graphics.fillStyle(0xff0000);
+    graphics.fillCircle(24, 24, 18);
+    graphics.generateTexture('boss', 48, 48);
     
-    // Treasure (detailed chest)
+    // Create TREASURE sprite (golden chest)
     graphics.clear();
-    graphics.fillStyle(0x8b4513); // Brown wood
-    graphics.fillRect(0, 16, 64, 32);
     graphics.fillStyle(0xf1c40f); // Gold
-    graphics.fillRect(4, 20, 56, 24);
-    graphics.fillStyle(0xd4af37); // Dark gold trim
-    graphics.fillRect(0, 16, 64, 4);
-    graphics.fillRect(0, 44, 64, 4);
-    graphics.fillRect(28, 24, 8, 8); // Lock
-    graphics.generateTexture('treasure', 64, 64);
+    graphics.fillRect(8, 12, 32, 24); // Main chest body
+    graphics.fillStyle(0xe67e22); // Darker gold for details
+    graphics.fillRect(12, 16, 24, 16); // Inner area
+    graphics.fillStyle(0x8b4513); // Brown for lock
+    graphics.fillRect(22, 20, 4, 8);
+    graphics.generateTexture('treasure', 48, 48);
     
-    // Projectiles
-    // Arrow
+    // Create ARROW sprite (simple arrow shape)
     graphics.clear();
     graphics.fillStyle(0x8b4513); // Brown shaft
-    graphics.fillRect(0, 6, 20, 4);
-    graphics.fillStyle(0xc0c0c0); // Silver tip
-    graphics.fillTriangle(20, 8, 24, 6, 24, 10);
-    graphics.fillStyle(0x228b22); // Green feathers
-    graphics.fillTriangle(0, 8, 4, 6, 4, 10);
-    graphics.generateTexture('arrow', 24, 16);
+    graphics.fillRect(4, 14, 24, 4);
+    graphics.fillStyle(0xc0c0c0); // Silver arrowhead
+    graphics.fillTriangle(28, 12, 32, 16, 28, 20);
+    graphics.fillStyle(0x654321); // Feathers
+    graphics.fillTriangle(4, 12, 0, 14, 4, 16);
+    graphics.fillTriangle(4, 16, 0, 18, 4, 20);
+    graphics.generateTexture('arrow', 32, 32);
     
-    // Fireball - updated to purple theme for attacks
+    // Create FIREBALL sprite (orange/red fire effect)
     graphics.clear();
-    graphics.fillStyle(0x9b59b6); // Purple fire
-    graphics.fillCircle(12, 12, 12);
-    graphics.fillStyle(0xe74c3c); // Red-orange core for contrast
-    graphics.fillCircle(12, 12, 8);
-    graphics.fillStyle(0x8e44ad); // Dark purple middle
-    graphics.fillCircle(12, 12, 4);
-    graphics.generateTexture('fireball', 24, 24);
-    
-    // Create purple magic particles for enhanced effects
-    graphics.clear();
-    graphics.fillStyle(0xd63031); // Bright purple particle
-    graphics.fillCircle(4, 4, 4);
-    graphics.generateTexture('magic-particle', 8, 8);
-    
-    // Create purple energy orb for ultimate
-    graphics.clear();
-    graphics.fillStyle(0x6c5ce7); // Bright purple
-    graphics.fillCircle(16, 16, 16);
-    graphics.fillStyle(0xa29bfe); // Light purple
-    graphics.fillCircle(16, 16, 12);
-    graphics.fillStyle(0xfd79a8); // Pink core
+    graphics.fillStyle(0xff4500); // Orange red core
     graphics.fillCircle(16, 16, 8);
+    graphics.fillStyle(0xff8c00); // Darker orange outer
+    graphics.fillCircle(16, 16, 12);
+    graphics.fillStyle(0xffa500); // Light orange glow
+    graphics.fillCircle(16, 16, 6);
+    graphics.generateTexture('fireball', 32, 32);
+    
+    // Create ENERGY ORB sprite (magical purple orb)
+    graphics.clear();
+    graphics.fillStyle(0x9b59b6); // Purple
+    graphics.fillCircle(16, 16, 10);
+    graphics.fillStyle(0xd2b4de); // Light purple center
+    graphics.fillCircle(16, 16, 6);
+    graphics.fillStyle(0xffffff); // White core
+    graphics.fillCircle(16, 16, 3);
     graphics.generateTexture('energy-orb', 32, 32);
     
     graphics.destroy();
+    console.log('Game sprites created');
+  }
+
+  createKnightAnimations() {
+    // Create animations for all classes
+    ['knight', 'archer', 'mage'].forEach(className => {
+      // Idle animation
+      if (!this.anims.exists(`${className}-idle-anim`)) {
+        this.anims.create({
+          key: `${className}-idle-anim`,
+          frames: [{ key: `${className}-idle` }],
+          frameRate: 1,
+          repeat: -1
+        });
+      }
+      
+      // Run animation
+      if (!this.anims.exists(`${className}-run-anim`)) {
+        this.anims.create({
+          key: `${className}-run-anim`,
+          frames: [{ key: `${className}-run` }],
+          frameRate: 8,
+          repeat: -1
+        });
+      }
+      
+      // Attack animations
+      for (let i = 1; i <= 3; i++) {
+        const animKey = `${className}-attack${i}-anim`;
+        if (!this.anims.exists(animKey)) {
+          this.anims.create({
+            key: animKey,
+            frames: [{ key: `${className}-attack${i}` }],
+            frameRate: 10,
+            repeat: 0
+          });
+        }
+      }
+    });
+    
+    console.log('Character animations created');
+  }
+
+  createWorld() {
+    // Create the game world background
+    this.add.rectangle(600, 300, 1200, 600, 0x228b22); // Green grass background
+    
+    // Set up physics world
+    this.physics.world.gravity.y = 0; // Top-down game, no gravity
+    
+    // Add some visual elements to make the world more interesting
+    // Add some trees/obstacles (optional decorative elements)
+    for (let i = 0; i < 8; i++) {
+      const x = Phaser.Math.Between(100, 1100);
+      const y = Phaser.Math.Between(100, 500);
+      
+      // Avoid placing decorations too close to the center (treasure area)
+      if (Phaser.Math.Distance.Between(x, y, 600, 300) > 150) {
+        // Simple tree representation
+        this.add.circle(x, y, 20, 0x8b4513); // Brown trunk
+        this.add.circle(x, y - 15, 25, 0x228b22); // Green leaves
+      }
+    }
+  }
+
+  createTreasure() {
+    // Create the treasure chest that needs to be defended
+    this.treasure = this.physics.add.sprite(600, 300, 'treasure');
+    this.treasure.setImmovable(true); // Treasure doesn't move
+    this.treasure.health = 100;
+    this.treasure.maxHealth = 100;
+    
+    // Set treasure collision body
+    this.treasure.body.setSize(50, 40);
+    
+    // Update game state
+    window.GameState.treasureHealth = this.treasure.health;
+    
+    console.log('Treasure created at center with 100 health');
   }
 
   createPlayer() {
     const className = window.GameState.selectedClass;
     
+    // Create player sprite based on selected class
     if (className === 'knight') {
       this.player = this.physics.add.sprite(300, 300, 'knight-idle');
       this.player.setScale(0.5);
@@ -1449,19 +1468,27 @@ class GameScene extends Phaser.Scene {
       this.player.currentState = 'idle';
     }
     
+    // Set player stats based on class
     this.setPlayerStats();
+    
+    console.log(`${className} player created with stats:`, {
+      health: this.player.health,
+      speed: this.player.speed,
+      damage: this.player.damage
+    });
   }
 
   setPlayerStats() {
     const className = window.GameState.selectedClass;
+    
     switch(className) {
       case 'knight':
         this.player.health = 150;
         this.player.maxHealth = 150;
         this.player.speed = 200;
-        this.player.damage = 35; // Increased damage
-        this.player.attackRange = 100; // Increased range
-        this.player.skillCooldown = 5000; // Longer cooldown for powerful skill
+        this.player.damage = 35;
+        this.player.attackRange = 100;
+        this.player.skillCooldown = 5000;
         break;
       case 'archer':
         this.player.health = 100;
@@ -1480,37 +1507,76 @@ class GameScene extends Phaser.Scene {
         this.player.skillCooldown = 4000;
         break;
     }
+    
+    // Update global game state
     window.GameState.playerHealth = this.player.health;
   }
 
-  createWorld() {
-    this.add.rectangle(600, 300, 1200, 600, 0x228b22);
-    this.physics.world.gravity.y = 0;
-  }
-
-  createTreasure() {
-    this.treasure = this.physics.add.sprite(600, 300, 'treasure');
-    this.treasure.setImmovable(true);
-    this.treasure.health = 100;
-    window.GameState.treasureHealth = this.treasure.health;
-  }
-
   setupControls() {
+    // Create keyboard controls
     this.cursors = this.input.keyboard.createCursorKeys();
     this.wasd = this.input.keyboard.addKeys('W,S,A,D');
     this.spaceKey = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.SPACE);
     
+    // Mouse controls for attacking
     this.input.on('pointerdown', (pointer) => {
       if (this.playerCooldowns.attack <= 0) {
         this.mouseX = pointer.x;
         this.mouseY = pointer.y;
         this.playerAttack();
-        this.playerCooldowns.attack = 300; // Faster attack speed
+        this.playerCooldowns.attack = 300; // Attack cooldown
       }
     });
+    
+    console.log('Controls setup complete');
   }
 
-  spawnEnemy() {
+  startWave() {
+    console.log(`Starting wave ${window.GameState.currentWave}`);
+    
+    // Request wave data from backend
+    API.startWave(window.GameState.sessionId, window.GameState.currentWave).then(response => {
+      if (response.success) {
+        const waveInfo = response.waveInfo;
+        
+        this.waveActive = true;
+        this.waveEnemiesSpawned = 0;
+        this.waveEnemiesRemaining = 0;
+        this.waveTargetEnemies = waveInfo.enemyCount + (waveInfo.hasBoss ? 1 : 0);
+        
+        // Show wave start message
+        this.showWaveStartMessage(waveInfo);
+        
+        // Start spawning enemies based on backend data
+        this.spawnEnemiesFromBackend(waveInfo);
+      } else {
+        console.error('Failed to start wave:', response.message);
+        // Fallback to local wave generation
+        this.startLocalWave();
+      }
+    }).catch(error => {
+      console.error('Wave start error:', error);
+      this.startLocalWave();
+    });
+  }
+  
+  spawnEnemiesFromBackend(waveInfo) {
+    const enemies = waveInfo.enemies;
+    
+    enemies.forEach((enemyData, index) => {
+      this.time.delayedCall(enemyData.spawnDelay, () => {
+        this.spawnEnemyFromData(enemyData);
+        
+        // Only notify backend if we're online to avoid spam
+        if (API.isOnline) {
+          API.enemySpawned(window.GameState.sessionId);
+        }
+      });
+    });
+  }
+  
+  spawnEnemyFromData(enemyData) {
+    // Spawn enemy at random edge
     const edge = Phaser.Math.Between(0, 3);
     let x, y;
     
@@ -1521,21 +1587,510 @@ class GameScene extends Phaser.Scene {
       case 3: x = 25; y = Phaser.Math.Between(50, 550); break;
     }
     
-    const enemy = this.physics.add.sprite(x, y, 'enemy');
+    let enemy;
+    if (enemyData.type === 'boss') {
+      enemy = this.physics.add.sprite(x, y, 'boss');
+      enemy.setScale(1.2);
+      enemy.isBoss = true;
+      this.createBossHealthBar(enemy);
+    } else {
+      enemy = this.physics.add.sprite(x, y, 'enemy');
+    }
+    
     enemy.setCollideWorldBounds(true);
-    enemy.health = 40;
-    enemy.speed = 60;
-    enemy.setDrag(100);
+    enemy.health = enemyData.health;
+    enemy.maxHealth = enemyData.health;
+    enemy.speed = enemyData.speed;
+    enemy.damage = enemyData.damage;
+    enemy.setDrag(150);
+    enemy.lastAttack = 0;
+    enemy.attackCooldown = 2000;
+    
+    if (enemy.isBoss) {
+      enemy.setTint(0xff0000);
+    }
     
     this.enemies.add(enemy);
+    this.waveEnemiesSpawned++;
+    this.waveEnemiesRemaining++;
+    
+    console.log(`Spawned ${enemyData.type} with ${enemyData.health} health and ${enemyData.speed} speed`);
+  }
+  
+  spawnLocalEnemy() {
+    // Check if we've spawned all enemies for this wave
+    if (this.waveEnemiesSpawned >= this.waveTargetEnemies) {
+      return;
+    }
+    
+    // Spawn enemy at random edge
+    const edge = Phaser.Math.Between(0, 3);
+    let x, y;
+    
+    switch(edge) {
+      case 0: x = Phaser.Math.Between(50, 1150); y = 25; break;
+      case 1: x = 1175; y = Phaser.Math.Between(50, 550); break;
+      case 2: x = Phaser.Math.Between(50, 1150); y = 575; break;
+      case 3: x = 25; y = Phaser.Math.Between(50, 550); break;
+    }
+    
+    let enemy;
+    const isBossWave = window.GameState.currentWave % 5 === 0;
+    const shouldSpawnBoss = isBossWave && this.waveEnemiesSpawned === this.waveTargetEnemies - 1;
+    
+    if (shouldSpawnBoss) {
+      enemy = this.physics.add.sprite(x, y, 'boss');
+      enemy.setScale(1.2);
+      enemy.isBoss = true;
+      this.createBossHealthBar(enemy);
+    } else {
+      enemy = this.physics.add.sprite(x, y, 'enemy');
+    }
+    
+    enemy.setCollideWorldBounds(true);
+    
+    // Set enemy stats based on wave
+    const waveLevel = Math.floor(window.GameState.currentWave / 5);
+    if (enemy.isBoss) {
+      enemy.health = 200 + (waveLevel * 100);
+      enemy.speed = 40 + (waveLevel * 10);
+      enemy.damage = 30 + (waveLevel * 5);
+      enemy.setTint(0xff0000);
+    } else {
+      enemy.health = 20 + (window.GameState.currentWave * 5);
+      enemy.speed = 50 + (window.GameState.currentWave * 5);
+      enemy.damage = 15;
+    }
+    
+    enemy.maxHealth = enemy.health;
+    enemy.setDrag(150);
+    enemy.lastAttack = 0;
+    enemy.attackCooldown = 2000;
+    
+    this.enemies.add(enemy);
+    this.waveEnemiesSpawned++;
+    this.waveEnemiesRemaining++;
+    
+    console.log(`Spawned ${enemy.isBoss ? 'boss' : 'enemy'} (${this.waveEnemiesSpawned}/${this.waveTargetEnemies}) with ${enemy.health} health`);
+  }
+
+  createBossHealthBar(boss) {
+    const barWidth = 300;
+    const barHeight = 20;
+    const barX = 600 - barWidth / 2;
+    const barY = 50;
+    
+    // Background
+    boss.healthBarBg = this.add.rectangle(600, barY, barWidth + 4, barHeight + 4, 0x000000);
+    boss.healthBarBg.setDepth(999);
+    
+    // Health bar
+    boss.healthBar = this.add.rectangle(barX + barWidth / 2, barY, barWidth, barHeight, 0xff0000);
+    boss.healthBar.setDepth(1000);
+    
+    // Boss name
+    boss.nameText = this.add.text(600, barY - 25, `BOSS - Wave ${window.GameState.currentWave}`, {
+      fontSize: '16px',
+      fill: '#ff0000',
+      fontFamily: 'Courier New'
+    }).setOrigin(0.5).setDepth(1000);
+    
+    boss.maxHealth = boss.health;
+  }
+
+  destroyBossHealthBar(boss) {
+    if (boss.healthBar) boss.healthBar.destroy();
+    if (boss.healthBarBg) boss.healthBarBg.destroy();
+    if (boss.nameText) boss.nameText.destroy();
+  }
+
+  startLocalWave() {
+    // Fallback local wave generation
+    console.log('Using local wave generation');
+    
+    this.waveActive = true;
+    this.waveEnemiesSpawned = 0;
+    this.waveEnemiesRemaining = 0;
+    
+    const baseEnemies = 3;
+    const enemyCount = baseEnemies + (window.GameState.currentWave - 1) * 2;
+    const hasBoss = window.GameState.currentWave % 5 === 0;
+    
+    this.waveTargetEnemies = enemyCount + (hasBoss ? 1 : 0);
+    this.currentWaveSpawnDelay = Math.max(800, 2000 - (window.GameState.currentWave * 100));
+    
+    // Show wave start message
+    const message = this.add.text(600, 200, `WAVE ${window.GameState.currentWave}\n${enemyCount} enemies${hasBoss ? ' + BOSS' : ''}`, {
+      fontSize: '24px',
+      fill: '#f39c12',
+      fontFamily: 'Courier New',
+      align: 'center'
+    }).setOrigin(0.5).setDepth(1000);
+    
+    this.tweens.add({
+      targets: message,
+      alpha: 0,
+      duration: 1000,
+      delay: 2000,
+      onComplete: () => message.destroy()
+    });
+    
+    // Start enemy spawning timer
+    this.enemySpawnTimer = this.time.addEvent({
+      delay: this.currentWaveSpawnDelay,
+      callback: () => this.spawnLocalEnemy(),
+      callbackScope: this,
+      repeat: this.waveTargetEnemies - 1
+    });
+  }
+  
+  showWaveStartMessage(waveInfo) {
+    const message = this.add.text(600, 200, 
+      `WAVE ${waveInfo.waveNumber}\n${waveInfo.enemyCount} enemies${waveInfo.hasBoss ? ' + BOSS' : ''}`, {
+      fontSize: '24px',
+      fill: '#f39c12',
+      fontFamily: 'Courier New',
+      align: 'center'
+    }).setOrigin(0.5).setDepth(1000);
+    
+    this.tweens.add({
+      targets: message,
+      alpha: 0,
+      duration: 1000,
+      delay: 2000,
+      onComplete: () => message.destroy()
+    });
+  }
+
+  checkWaveComplete() {
+    // Check if all enemies are defeated
+    if (this.waveActive && this.enemies.children.size === 0 && 
+        this.waveEnemiesSpawned >= this.waveTargetEnemies) {
+      this.completeWave();
+    }
+  }
+
+  completeWave() {
+    console.log(`Wave ${window.GameState.currentWave} completed!`);
+    
+    this.waveActive = false;
+    this.betweenWaveTime = 5000;
+    
+    // Only notify backend if we're online to avoid spam
+    if (API.isOnline) {
+      API.completeWave(window.GameState.sessionId, window.GameState.currentWave).then(response => {
+        if (response.success) {
+          window.GameState.score = response.totalScore;
+          window.GameState.currentWave = response.nextWave;
+          
+          this.showWaveCompleteMessage(response.waveBonus);
+        } else {
+          // Fallback to local wave completion
+          const waveBonus = window.GameState.currentWave * 50;
+          window.GameState.score += waveBonus;
+          window.GameState.currentWave++;
+          
+          this.showWaveCompleteMessage(waveBonus);
+        }
+        
+        // Start next wave after delay
+        this.time.delayedCall(this.betweenWaveTime, () => {
+          this.startWave();
+        });
+      }).catch(error => {
+        console.error('Wave completion notification failed:', error);
+        // Fallback to local wave completion
+        const waveBonus = window.GameState.currentWave * 50;
+        window.GameState.score += waveBonus;
+        window.GameState.currentWave++;
+        
+        this.showWaveCompleteMessage(waveBonus);
+        
+        this.time.delayedCall(this.betweenWaveTime, () => {
+          this.startWave();
+        });
+      });
+    } else {
+      // Offline mode - use local wave completion immediately
+      const waveBonus = window.GameState.currentWave * 50;
+      window.GameState.score += waveBonus;
+      window.GameState.currentWave++;
+      
+      this.showWaveCompleteMessage(waveBonus);
+      
+      this.time.delayedCall(this.betweenWaveTime, () => {
+        this.startWave();
+      });
+    }
+  }
+
+  showWaveCompleteMessage(bonus) {
+    const message = this.add.text(600, 250, `WAVE COMPLETE!\nBonus: +${bonus}`, {
+      fontSize: '24px',
+      fill: '#27ae60',
+      fontFamily: 'Courier New',
+      align: 'center'
+    }).setOrigin(0.5).setDepth(1000);
+    
+    // Fade out after 3 seconds
+    this.tweens.add({
+      targets: message,
+      alpha: 0,
+      duration: 1000,
+      delay: 2000,
+      onComplete: () => message.destroy()
+    });
+  }
+
+  updateBoss(boss) {
+    // Boss AI - more complex behavior
+    const distanceToTreasure = Phaser.Math.Distance.Between(
+      boss.x, boss.y,
+      this.treasure.x, this.treasure.y
+    );
+    
+    const distanceToPlayer = Phaser.Math.Distance.Between(
+      boss.x, boss.y,
+      this.player.x, this.player.y
+    );
+    
+    // Boss targets player if close, otherwise goes for treasure
+    let targetX, targetY;
+    if (distanceToPlayer < 200) {
+      targetX = this.player.x;
+      targetY = this.player.y;
+    } else {
+      targetX = this.treasure.x;
+      targetY = this.treasure.y;
+    }
+    
+    const angle = Phaser.Math.Angle.Between(boss.x, boss.y, targetX, targetY);
+    boss.setVelocity(
+      boss.speed * Math.cos(angle),
+      boss.speed * Math.sin(angle)
+    );
+    
+    // Update boss health bar
+    this.updateBossHealthBar(boss);
+    
+    // Boss special attack
+    if (this.time.now - boss.lastAttack > boss.attackCooldown && distanceToPlayer < 150) {
+      this.bossSpecialAttack(boss);
+      boss.lastAttack = this.time.now;
+    }
+    
+    // Check collision with treasure
+    if (distanceToTreasure < 50) {
+      this.treasure.health -= boss.damage;
+      boss.destroy();
+      this.destroyBossHealthBar(boss);
+      window.GameState.treasureHealth = this.treasure.health;
+      
+      // Update wave enemy count
+      if (this.waveActive) {
+        this.waveEnemiesRemaining--;
+        this.checkWaveComplete();
+      }
+      
+      if (this.treasure.health <= 0) {
+        this.gameOver();
+      }
+    }
+    
+    // Check collision with player
+    if (distanceToPlayer < 35) {
+      this.damagePlayer(25); // Bosses do more damage
+      this.bossKnockback(boss);
+    }
+  }
+
+  bossSpecialAttack(boss) {
+    // Boss fires projectiles in multiple directions
+    for (let i = 0; i < 8; i++) {
+      const angle = (i * Math.PI * 2) / 8;
+      
+      const projectile = this.physics.add.sprite(boss.x, boss.y, 'fireball');
+      projectile.setTint(0x8b0000); // Dark red
+      projectile.damage = 20;
+      projectile.setVelocity(
+        200 * Math.cos(angle),
+        200 * Math.sin(angle)
+      );
+      
+      this.projectiles.add(projectile);
+    }
+    
+    // Visual effect
+    const flash = this.add.circle(boss.x, boss.y, 50, 0xff0000, 0.5);
+    this.tweens.add({
+      targets: flash,
+      scaleX: 2,
+      scaleY: 2,
+      alpha: 0,
+      duration: 300,
+      onComplete: () => flash.destroy()
+    });
+  }
+
+  bossKnockback(boss) {
+    // Knockback effect - push player away from boss
+    const angle = Phaser.Math.Angle.Between(boss.x, boss.y, this.player.x, this.player.y);
+    const knockbackForce = 300;
+    
+    this.player.setVelocity(
+      knockbackForce * Math.cos(angle),
+      knockbackForce * Math.sin(angle)
+    );
+    
+    // Reduce knockback over time
+    this.time.delayedCall(200, () => {
+      this.player.setVelocity(this.player.body.velocity.x * 0.5, this.player.body.velocity.y * 0.5);
+    });
+  }
+
+  damageEnemy(enemy, damage) {
+    if (!enemy || !enemy.active) return;
+    
+    enemy.health -= damage;
+    enemy.setTint(0xff0000);
+    
+    this.time.delayedCall(100, () => {
+      if (enemy && enemy.active) {
+        enemy.clearTint();
+        if (enemy.isBoss) {
+          enemy.setTint(0xff0000);
+        }
+      }
+    });
+    
+    if (enemy.health <= 0) {
+      const enemyType = enemy.isBoss ? 'boss' : 'enemy';
+      
+      // Only notify backend if we're online to avoid spam
+      if (API.isOnline) {
+        API.enemyKilled(window.GameState.sessionId, enemyType, window.GameState.currentWave).then(response => {
+          if (response.success) {
+            window.GameState.score += response.scoreGain;
+          } else {
+            // Fallback to local scoring
+            const localScore = enemy.isBoss ? 200 + (window.GameState.currentWave * 20) : 10 + window.GameState.currentWave;
+            window.GameState.score += localScore;
+          }
+        }).catch(error => {
+          console.error('Enemy kill notification failed:', error);
+          // Fallback to local scoring
+          const localScore = enemy.isBoss ? 200 + (window.GameState.currentWave * 20) : 10 + window.GameState.currentWave;
+          window.GameState.score += localScore;
+        });
+      } else {
+        // Offline mode - use local scoring immediately
+        const localScore = enemy.isBoss ? 200 + (window.GameState.currentWave * 20) : 10 + window.GameState.currentWave;
+        window.GameState.score += localScore;
+      }
+      
+      if (enemy.isBoss) {
+        this.destroyBossHealthBar(enemy);
+        this.createBossDeathEffect(enemy.x, enemy.y);
+      }
+      
+      enemy.destroy();
+      
+      if (this.waveActive) {
+        this.waveEnemiesRemaining--;
+        this.checkWaveComplete();
+      }
+    }
+  }
+
+  createBossDeathEffect(x, y) {
+    // Large explosion effect for boss death
+    for (let i = 0; i < 12; i++) {
+      const angle = (i * Math.PI * 2) / 12;
+      const distance = Phaser.Math.Between(30, 80);
+      
+      const explosion = this.add.circle(
+        x + distance * Math.cos(angle),
+        y + distance * Math.sin(angle),
+        Phaser.Math.Between(10, 20),
+        0xff8800,
+        0.8
+      );
+      
+      this.tweens.add({
+        targets: explosion,
+        scaleX: 2,
+        scaleY: 2,
+        alpha: 0,
+        duration: 500,
+        delay: i * 50,
+        onComplete: () => explosion.destroy()
+      });
+    }
+  }
+
+  createMeteorWarning(x, y) {
+    // Simplified warning circle
+    const warning = this.add.graphics();
+    warning.fillStyle(0xff4757, 0.2);
+    warning.fillCircle(x, y, 25);
+    warning.lineStyle(2, 0xff3742, 0.6);
+    warning.strokeCircle(x, y, 25);
+    
+    // Simple fade out
+    this.tweens.add({
+      targets: warning,
+      alpha: 0,
+      duration: 300,
+      onComplete: () => warning.destroy()
+    });
+  }
+
+  createSimpleMeteorExplosion(x, y) {
+    // Much simpler explosion
+    const explosion = this.add.graphics();
+    
+    explosion.fillStyle(0x9b59b6, 0.4);
+    explosion.fillCircle(x, y, 20);
+    explosion.lineStyle(3, 0x6c5ce7, 0.6);
+    explosion.strokeCircle(x, y, 25);
+    
+    this.tweens.add({
+      targets: explosion,
+      scaleX: 2,
+      scaleY: 2,
+      alpha: 0,
+      duration: 300,
+      onComplete: () => explosion.destroy()
+    });
+  }
+
+  createMagicExplosion(x, y) {
+    // Simplified magic explosion
+    const graphics = this.add.graphics();
+    
+    graphics.fillStyle(0x9b59b6, 0.5);
+    graphics.fillCircle(x, y, 12);
+    graphics.lineStyle(2, 0x8e44ad, 0.6);
+    graphics.strokeCircle(x, y, 15);
+    
+    this.tweens.add({
+      targets: graphics,
+      scaleX: 1.5,
+      scaleY: 1.5,
+      alpha: 0,
+      duration: 150,
+      onComplete: () => graphics.destroy()
+    });
   }
 
   update() {
     if (!this.player) return;
     
+    // Update cooldowns
     this.playerCooldowns.attack = Math.max(0, this.playerCooldowns.attack - this.game.loop.delta);
     this.playerCooldowns.skill = Math.max(0, this.playerCooldowns.skill - this.game.loop.delta);
     
+    // Update game systems
     this.handlePlayerMovement();
     this.handlePlayerActions();
     this.updateEnemies();
@@ -1547,6 +2102,7 @@ class GameScene extends Phaser.Scene {
     let velocityX = 0;
     let velocityY = 0;
     
+    // Check keyboard input
     if (this.cursors.left.isDown || this.wasd.A.isDown) {
       velocityX = -this.player.speed;
     } else if (this.cursors.right.isDown || this.wasd.D.isDown) {
@@ -1559,6 +2115,7 @@ class GameScene extends Phaser.Scene {
       velocityY = this.player.speed;
     }
     
+    // Normalize diagonal movement
     if (velocityX !== 0 && velocityY !== 0) {
       velocityX *= 0.707;
       velocityY *= 0.707;
@@ -1566,7 +2123,7 @@ class GameScene extends Phaser.Scene {
     
     this.player.setVelocity(velocityX, velocityY);
     
-    // Handle animations for all classes
+    // Update animations
     const className = window.GameState.selectedClass;
     this.updatePlayerAnimations(velocityX, velocityY, className);
   }
@@ -1706,6 +2263,7 @@ class GameScene extends Phaser.Scene {
       this.mouseX, this.mouseY
     );
     
+    
     const arcAngle = Math.PI / 1.5; // Wider attack arc
     
     this.enemies.children.entries.forEach(enemy => {
@@ -1790,185 +2348,7 @@ class GameScene extends Phaser.Scene {
       300 * Math.sin(angle)
     );
     
-    // Removed the pulsing effect and particle trail
     this.projectiles.add(fireball);
-    
-    // Removed the magic circle effect
-  }
-
-  createMagicTrail(projectile, color) {
-    // Simplified trail - just a few particles, no continuous trail
-    for (let i = 0; i < 3; i++) {
-      this.time.delayedCall(i * 100, () => {
-        if (projectile && projectile.active) {
-          const particle = this.add.sprite(projectile.x, projectile.y, 'magic-particle');
-          particle.setTint(color);
-          particle.setAlpha(0.5);
-          particle.setScale(0.5);
-          
-          this.tweens.add({
-            targets: particle,
-            alpha: 0,
-            duration: 200,
-            onComplete: () => particle.destroy()
-          });
-        }
-      });
-    }
-  }
-
-  mageSpecialSkill() {
-    // Simplified meteor shower
-    console.log('Mage Ultimate: Meteor Storm!');
-    
-    // Removed the complex cast effect
-    
-    for (let i = 0; i < 8; i++) { // Reduced from 12 to 8 meteors
-      this.time.delayedCall(i * 200, () => {
-        const targetX = Phaser.Math.Between(100, 1100);
-        const targetY = Phaser.Math.Between(100, 500);
-        
-        // Simplified warning indicator
-        this.createMeteorWarning(targetX, targetY);
-        
-        this.time.delayedCall(300, () => { // Reduced delay
-          const meteor = this.physics.add.sprite(targetX, -50, 'energy-orb');
-          meteor.damage = this.player.damage * 1.8;
-          meteor.setVelocity(0, 300); // Faster fall
-          meteor.setScale(1.0); // Smaller scale
-          meteor.setTint(0x6c5ce7);
-          
-          // Removed rotation and pulsing effects
-          
-          this.projectiles.add(meteor);
-          
-          // Simplified ground hit detection
-          const originalUpdate = meteor.preUpdate;
-          meteor.preUpdate = (time, delta) => {
-            if (originalUpdate) originalUpdate.call(meteor, time, delta);
-            
-            if (meteor.y > 550) {
-              this.createSimpleMeteorExplosion(meteor.x, meteor.y);
-              meteor.destroy();
-            }
-          };
-        });
-      });
-    }
-  }
-
-  createMeteorWarning(x, y) {
-    // Simplified warning circle
-    const warning = this.add.graphics();
-    warning.fillStyle(0xff4757, 0.2);
-    warning.fillCircle(x, y, 25);
-    warning.lineStyle(2, 0xff3742, 0.6);
-    warning.strokeCircle(x, y, 25);
-    
-    // Simple fade out
-    this.tweens.add({
-      targets: warning,
-      alpha: 0,
-      duration: 300,
-      onComplete: () => warning.destroy()
-    });
-  }
-
-  createSimpleMeteorExplosion(x, y) {
-    // Much simpler explosion
-    const explosion = this.add.graphics();
-    
-    explosion.fillStyle(0x9b59b6, 0.4);
-    explosion.fillCircle(x, y, 20);
-    explosion.lineStyle(3, 0x6c5ce7, 0.6);
-    explosion.strokeCircle(x, y, 25);
-    
-    this.tweens.add({
-      targets: explosion,
-      scaleX: 2,
-      scaleY: 2,
-      alpha: 0,
-      duration: 300,
-      onComplete: () => explosion.destroy()
-    });
-    
-    // No flying particles
-  }
-
-  createMagicExplosion(x, y) {
-    // Simplified magic explosion
-    const graphics = this.add.graphics();
-    
-    graphics.fillStyle(0x9b59b6, 0.5);
-    graphics.fillCircle(x, y, 12);
-    graphics.lineStyle(2, 0x8e44ad, 0.6);
-    graphics.strokeCircle(x, y, 15);
-    
-    this.tweens.add({
-      targets: graphics,
-      scaleX: 1.5,
-      scaleY: 1.5,
-      alpha: 0,
-      duration: 150,
-      onComplete: () => graphics.destroy()
-    });
-    
-    // No particles
-  }
-
-  updateProjectiles() {
-    const projectilesList = [...this.projectiles.children.entries];
-    
-    projectilesList.forEach(projectile => {
-      if (!projectile || !projectile.active) return;
-      
-      // Check collision with enemies
-      this.enemies.children.entries.forEach(enemy => {
-        if (!enemy || !enemy.active) return;
-        
-        const distance = Phaser.Math.Distance.Between(
-          projectile.x, projectile.y,
-          enemy.x, enemy.y
-        );
-        
-        if (distance < 20) {
-          // Special explosion effect for mage projectiles
-          if (projectile.texture.key === 'fireball' || projectile.texture.key === 'energy-orb') {
-            this.createMagicExplosion(projectile.x, projectile.y);
-          }
-          
-          this.damageEnemy(enemy, projectile.damage);
-          projectile.destroy();
-        }
-      });
-      
-      // Remove projectiles that are off-screen
-      if (projectile.x < -50 || projectile.x > 1250 || 
-          projectile.y < -50 || projectile.y > 650) {
-        projectile.destroy();
-      }
-    });
-  }
-
-  createMagicExplosion(x, y) {
-    // Simplified magic explosion
-    const graphics = this.add.graphics();
-    
-    graphics.fillStyle(0x9b59b6, 0.5);
-    graphics.fillCircle(x, y, 12);
-    graphics.lineStyle(2, 0x8e44ad, 0.6);
-    graphics.strokeCircle(x, y, 15);
-    
-    this.tweens.add({
-      targets: graphics,
-      scaleX: 1.5,
-      scaleY: 1.5,
-      alpha: 0,
-      duration: 150,
-      onComplete: () => graphics.destroy()
-    });
-    
-    // No particles
   }
 
   updateAllyKnights() {
@@ -1994,7 +2374,7 @@ class GameScene extends Phaser.Scene {
           
           if (distance < nearestDistance) {
             nearestDistance = distance;
-            nearestEnemy = enemy;
+                       nearestEnemy = enemy;
           }
         });
       }
@@ -2048,14 +2428,105 @@ class GameScene extends Phaser.Scene {
     });
   }
 
+  updateProjectiles() {
+    const projectilesList = [...this.projectiles.children.entries];
+    
+    projectilesList.forEach(projectile => {
+      if (!projectile || !projectile.active) return;
+      
+      // Check collision with enemies
+      this.enemies.children.entries.forEach(enemy => {
+        if (!enemy || !enemy.active) return;
+        
+        const distance = Phaser.Math.Distance.Between(
+          projectile.x, projectile.y,
+          enemy.x, enemy.y
+        );
+        
+        if (distance < 20) {
+          // Special explosion effect for mage projectiles
+          if (projectile.texture.key === 'fireball' || projectile.texture.key === 'energy-orb') {
+            this.createMagicExplosion(projectile.x, projectile.y);
+          }
+          
+          this.damageEnemy(enemy, projectile.damage);
+          projectile.destroy();
+        }
+      });
+      
+      // Remove projectiles that are off-screen
+      if (projectile.x < -50 || projectile.x > 1250 || 
+          projectile.y < -50 || projectile.y > 650) {
+        projectile.destroy();
+      }
+    });
+  }
+
+  mageSpecialSkill() {
+    // Simplified meteor shower
+    console.log('Mage Ultimate: Meteor Storm!');
+    
+    for (let i = 0; i < 8; i++) {
+      this.time.delayedCall(i * 200, () => {
+        const targetX = Phaser.Math.Between(100, 1100);
+        const targetY = Phaser.Math.Between(100, 500);
+        
+        // Simplified warning indicator
+        this.createMeteorWarning(targetX, targetY);
+        
+        this.time.delayedCall(300, () => {
+          const meteor = this.physics.add.sprite(targetX, -50, 'energy-orb');
+          meteor.damage = this.player.damage * 1.8;
+          meteor.setVelocity(0, 300);
+          meteor.setScale(1.0);
+          meteor.setTint(0x6c5ce7);
+          
+          this.projectiles.add(meteor);
+          
+          // Simplified ground hit detection
+          const originalUpdate = meteor.preUpdate;
+          meteor.preUpdate = (time, delta) => {
+            if (originalUpdate) originalUpdate.call(meteor, time, delta);
+            
+            if (meteor.y > 550) {
+              this.createSimpleMeteorExplosion(meteor.x, meteor.y);
+              meteor.destroy();
+            }
+          };
+        });
+      });
+    }
+  }
+
+  updateBossHealthBar(boss) {
+    if (boss.healthBar && boss.healthBarBg && boss.nameText) {
+      const healthPercent = boss.health / boss.maxHealth;
+      boss.healthBar.scaleX = healthPercent;
+      
+      // Change color based on health
+      if (healthPercent > 0.6) {
+        boss.healthBar.setFillStyle(0xff0000); // Red
+      } else if (healthPercent > 0.3) {
+        boss.healthBar.setFillStyle(0xff8800); // Orange
+      } else {
+        boss.healthBar.setFillStyle(0xffff00); // Yellow
+      }
+    }
+  }
+
   updateEnemies() {
     const enemiesList = [...this.enemies.children.entries];
     
     enemiesList.forEach(enemy => {
       if (!enemy || !enemy.active) return;
       
+      // Special boss behavior
+      if (enemy.isBoss) {
+        this.updateBoss(enemy);
+        return;
+      }
+      
       // Move towards treasure
-
       const treasureAngle = Phaser.Math.Angle.Between(
         enemy.x, enemy.y,
         this.treasure.x, this.treasure.y
@@ -2077,6 +2548,12 @@ class GameScene extends Phaser.Scene {
         enemy.destroy();
         window.GameState.treasureHealth = this.treasure.health;
         
+        // Update wave enemy count
+        if (this.waveActive) {
+          this.waveEnemiesRemaining--;
+          this.checkWaveComplete();
+        }
+        
         if (this.treasure.health <= 0) {
           this.gameOver();
         }
@@ -2091,26 +2568,14 @@ class GameScene extends Phaser.Scene {
       if (playerDistance < 30) {
         this.damagePlayer(10);
         enemy.destroy();
+        
+        // Update wave enemy count
+        if (this.waveActive) {
+          this.waveEnemiesRemaining--;
+          this.checkWaveComplete();
+        }
       }
     });
-  }
-
-  damageEnemy(enemy, damage) {
-    if (!enemy || !enemy.active) return;
-    
-    enemy.health -= damage;
-    enemy.setTint(0xff0000);
-    
-    this.time.delayedCall(100, () => {
-      if (enemy && enemy.active) {
-        enemy.clearTint();
-      }
-    });
-    
-    if (enemy.health <= 0) {
-      enemy.destroy();
-      window.GameState.score += 10;
-    }
   }
 
   damagePlayer(damage) {
