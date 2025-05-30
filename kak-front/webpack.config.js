@@ -5,7 +5,8 @@ module.exports = {
   entry: './src/index.js',
   output: {
     path: path.resolve(__dirname, 'dist'),
-    filename: 'bundle.js'
+    filename: 'bundle.js',
+    clean: true
   },
   module: {
     rules: [
@@ -31,16 +32,19 @@ module.exports = {
         use: ['style-loader', 'css-loader']
       },
       {
-        test: /\.(png|svg|jpg|jpeg|gif)$/,
-        use: ['file-loader']
+        test: /\.(png|svg|jpg|jpeg|gif)$/i,
+        type: 'asset/resource',
+        generator: {
+          filename: 'assets/[name][ext]'
+        }
       },
       {
         test: /\.(woff|woff2|eot|ttf|otf)$/,
-        use: ['file-loader']
+        type: 'asset/resource'
       },
       {
         test: /\.(mp3|wav|ogg)$/,
-        use: ['file-loader']
+        type: 'asset/resource'
       }
     ]
   },
@@ -50,14 +54,23 @@ module.exports = {
     })
   ],
   devServer: {
-    contentBase: './dist',
+    static: {
+      directory: path.join(__dirname, 'public'),
+    },
     port: 3000,
     hot: true,
-    proxy: {
-      '/api': {
+    proxy: [
+      {
+        context: ['/api'],
         target: 'http://localhost:8081',
         changeOrigin: true
       }
+    ]
+  },
+  resolve: {
+    fallback: {
+      "path": false,
+      "fs": false
     }
   }
 };
