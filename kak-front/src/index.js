@@ -1,185 +1,12 @@
 import Phaser from 'phaser';
 import './styles/index.css';
+import { API } from './api/api.js';
+import { GameState } from './game/gameState.js';
+import { MapGenerator } from './game/mapGenerator.js';
+import { PreloaderScene } from './scenes/PreloaderScene.js';
 
-// API helper
-const API = {
-  baseUrl: 'http://localhost:8081/api',
-  isOnline: true,
-  
-  async call(endpoint, method = 'GET', data = null) {
-    // If we're already in offline mode, don't try API calls
-    if (!this.isOnline && !endpoint.includes('/auth/')) {
-      return this.getMockResponse(endpoint, method, data);
-    }
-    
-    const config = {
-      method,
-      headers: {
-        'Content-Type': 'application/json',
-      },
-    };
-    
-    if (data) {
-      config.body = JSON.stringify(data);
-    }
-    
-    try {
-      const response = await fetch(`${this.baseUrl}${endpoint}`, config);
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-      }
-      const result = await response.json();
-      this.isOnline = true;
-      return result;
-    } catch (error) {
-      console.error('API call failed:', error);
-      this.isOnline = false;
-      
-      // Return mock responses for offline mode
-      return this.getMockResponse(endpoint, method, data);
-    }
-  },
-  
-  getMockResponse(endpoint, method, data) {
-    console.log('🔌 Backend unavailable - using offline mode');
-    
-    switch(endpoint) {
-      case '/game/start':
-        return { 
-          success: true, 
-          sessionId: 'offline-' + Date.now(),
-          message: 'Playing in offline mode' 
-        };
-      case '/wave/start':
-        // Mock wave data generation
-        const waveNumber = data.currentWave || 1;
-        const baseEnemies = 3;
-        const enemyCount = baseEnemies + (waveNumber - 1) * 2;
-        const hasBoss = waveNumber % 5 === 0;
-        
-        const enemies = [];
-        // Generate regular enemies
-        for (let i = 0; i < enemyCount; i++) {
-          enemies.push({
-            type: 'enemy',
-            health: 20 + (waveNumber * 5),
-            speed: 50 + (waveNumber * 5),
-            damage: 15,
-            spawnDelay: i * 1000
-          });
-        }
-        
-        // Add boss if needed
-        if (hasBoss) {
-          enemies.push({
-            type: 'boss',
-            health: 200 + (waveNumber * 50),
-            speed: 40 + (waveNumber * 3),
-            damage: 30 + (waveNumber * 5),
-            spawnDelay: enemyCount * 1000 + 2000
-          });
-        }
-        
-        return {
-          success: true,
-          waveInfo: {
-            waveNumber: waveNumber,
-            enemyCount: enemyCount,
-            spawnDelay: Math.max(800, 2000 - (waveNumber * 100)),
-            hasBoss: hasBoss,
-            preparationTime: 3000,
-            enemies: enemies
-          }
-        };
-      case '/wave/enemy-spawned':
-        return { success: true, enemiesSpawned: 1 };
-      case '/wave/enemy-killed':
-        const scoreGain = data.enemyType === 'boss' ? 200 + (data.currentWave * 20) : 10 + data.currentWave;
-        return { success: true, scoreGain: scoreGain, enemiesKilled: 1 };
-      case '/wave/complete':
-        const waveBonus = data.waveNumber * 50;
-        return { 
-          success: true, 
-          waveBonus: waveBonus,
-          nextWave: data.waveNumber + 1,
-          totalScore: (window.GameState.score || 0) + waveBonus
-        };
-      case '/session/complete':
-        // Save score to localStorage
-        const scores = JSON.parse(localStorage.getItem('kak_offline_scores') || '[]');
-        scores.push({
-          score: data.finalScore,
-          wave: data.finalWave,
-          date: new Date().toISOString(),
-          nickname: window.GameState.nickname
-        });
-        localStorage.setItem('kak_offline_scores', JSON.stringify(scores));
-        return { success: true };
-      default:
-        if (endpoint.includes('/leaderboard/')) {
-          const scores = JSON.parse(localStorage.getItem('kak_offline_scores') || '[]');
-          const sortedScores = scores.sort((a, b) => b.score - a.score).slice(0, 10);
-          return sortedScores.map((score, index) => ({
-            rank: index + 1,
-            username: score.nickname,
-            bestScore: score.score,
-            bestWave: score.wave,
-            level: 1
-          }));
-        }
-        if (endpoint.includes('/session/') && endpoint.includes('/status')) {
-          return {
-            success: true,
-            session: {
-              nickname: window.GameState.nickname,
-              score: window.GameState.score,
-              wave: window.GameState.currentWave
-            },
-            wave: {
-              currentWave: window.GameState.currentWave,
-              waveActive: false,
-              enemiesSpawned: 0,
-              enemiesKilled: 0
-            }
-          };
-        }
-        return { success: false, message: 'Offline mode' };
-    }
-  },
-  
-  // Game API endpoints
-  startGame(nickname) {
-    return this.call('/game/start', 'POST', { nickname });
-  },
-  
-  startWave(sessionId, currentWave) {
-    return this.call('/wave/start', 'POST', { sessionId, currentWave });
-  },
-  
-  enemySpawned(sessionId) {
-    return this.call('/wave/enemy-spawned', 'POST', { sessionId });
-  },
-  
-  enemyKilled(sessionId, enemyType, currentWave) {
-    return this.call('/wave/enemy-killed', 'POST', { sessionId, enemyType, currentWave });
-  },
-  
-  completeWave(sessionId, waveNumber) {
-    return this.call('/wave/complete', 'POST', { sessionId, waveNumber });
-  },
-  
-  getSessionStatus(sessionId) {
-    return this.call(`/session/${sessionId}/status`);
-  },
-  
-  completeSession(sessionData) {
-    return this.call('/session/complete', 'POST', sessionData);
-  },
-  
-  getLeaderboard(type = 'score', limit = 10) {
-    return this.call(`/leaderboard/${type}?limit=${limit}`);
-  }
-};
+// Make API available globally
+window.API = API;
 
 // Game State
 window.GameState = {
@@ -187,6 +14,7 @@ window.GameState = {
   nickname: null,
   sessionId: null,
   selectedClass: 'knight',
+  selectedMap: 'grassland', // Add map selection
   
   // Game state
   currentWave: 1,
@@ -208,239 +36,6 @@ window.GameState = {
   // Session tracking
   sessionStartTime: null
 };
-
-// Preloader Scene
-class PreloaderScene extends Phaser.Scene {
-  constructor() {
-    super({ key: 'PreloaderScene' });
-  }
-
-  preload() {
-    // Don't try to load logo that doesn't exist
-    // this.load.image('logo', 'assets/logo.png');
-  }
-
-  create() {
-    // Create sprites programmatically without loading screen
-    this.createAllSprites();
-    
-    // Go directly to MenuScene
-    this.scene.start('MenuScene');
-  }
-  
-  createAllSprites() {
-    const graphics = this.add.graphics();
-    
-    // Create detailed KNIGHT sprites
-    graphics.fillStyle(0x95a5a6); // Silver armor
-    graphics.fillRect(48, 16, 32, 80); // Body
-    graphics.fillRect(40, 24, 48, 16); // Shoulders
-    
-    graphics.fillStyle(0xf4d03f); // Gold trim
-    graphics.fillRect(46, 32, 36, 4); // Chest plate trim
-    graphics.fillRect(58, 20, 12, 8); // Helmet trim
-    
-    graphics.fillStyle(0x2c3e50); // Dark visor
-    graphics.fillRect(60, 24, 8, 4);
-    
-    graphics.fillStyle(0x8b4513); // Brown handle
-    graphics.fillRect(16, 32, 4, 32); // Sword handle
-    graphics.fillStyle(0xc0c0c0); // Silver blade
-    graphics.fillRect(12, 16, 12, 24); // Sword blade
-    
-    graphics.fillStyle(0xe74c3c); // Red cape
-    graphics.fillTriangle(80, 24, 96, 32, 80, 64);
-    
-    graphics.generateTexture('knight-idle', 128, 128);
-    
-    // Knight running pose
-    graphics.clear();
-    graphics.fillStyle(0x95a5a6);
-    graphics.fillRect(52, 16, 32, 80); // Body leaning forward
-    graphics.fillRect(44, 24, 48, 16); // Shoulders
-    
-    graphics.fillStyle(0xf4d03f);
-    graphics.fillRect(50, 32, 36, 4);
-    graphics.fillRect(62, 20, 12, 8);
-    
-    graphics.fillStyle(0x2c3e50);
-    graphics.fillRect(64, 24, 8, 4);
-    
-    graphics.fillStyle(0x8b4513);
-    graphics.fillRect(20, 28, 4, 32); // Sword angled
-    graphics.fillStyle(0xc0c0c0);
-    graphics.fillRect(16, 12, 12, 24);
-    
-    graphics.fillStyle(0xe74c3c);
-    graphics.fillTriangle(84, 20, 100, 28, 84, 60); // Cape flowing
-    
-    graphics.generateTexture('knight-run', 128, 128);
-    
-    // Create other knight animation frames
-    graphics.generateTexture('knight-walk', 128, 128);
-    graphics.generateTexture('knight-jump', 128, 128);
-    graphics.generateTexture('knight-attack1', 128, 128);
-    graphics.generateTexture('knight-attack2', 128, 128);
-    graphics.generateTexture('knight-attack3', 128, 128);
-    graphics.generateTexture('knight-hurt', 128, 128);
-    graphics.generateTexture('knight-dead', 128, 128);
-    graphics.generateTexture('knight-runattack', 128, 128);
-    graphics.generateTexture('knight-protect', 128, 128);
-    
-    // Create detailed ARCHER sprites
-    graphics.clear();
-    
-    // Archer idle pose
-    graphics.fillStyle(0x27ae60); // Green leather armor
-    graphics.fillRect(48, 20, 32, 76); // Body
-    graphics.fillRect(44, 24, 40, 12); // Shoulders
-    
-    graphics.fillStyle(0x2d5a3d); // Dark green trim
-    graphics.fillRect(46, 28, 36, 4); // Chest trim
-    graphics.fillRect(46, 36, 36, 4); // Belt
-    
-    graphics.fillStyle(0x8b4513); // Brown hood
-    graphics.fillCircle(64, 20, 14); // Hood
-    graphics.fillStyle(0xfdbcb4); // Skin tone
-    graphics.fillCircle(64, 24, 6); // Face
-    
-    graphics.fillStyle(0x2c3e50); // Dark eyes
-    graphics.fillRect(62, 22, 2, 2);
-    graphics.fillRect(66, 22, 2, 2);
-    
-    // Bow (remove the strokeLineStyle call that was causing error)
-    graphics.fillStyle(0x8b4513); // Brown bow
-    graphics.fillRect(24, 16, 4, 48); // Bow staff
-    
-    // Quiver
-    graphics.fillStyle(0x654321); // Brown quiver
-    graphics.fillRect(84, 28, 8, 24);
-    graphics.fillStyle(0xf1c40f); // Yellow arrows
-    graphics.fillRect(86, 30, 4, 16);
-    
-    graphics.generateTexture('archer-idle', 128, 128);
-    
-    // Archer running pose
-    graphics.clear();
-    graphics.fillStyle(0x27ae60);
-    graphics.fillRect(52, 20, 32, 76); // Body leaning forward
-    graphics.fillRect(48, 24, 40, 12);
-    
-    graphics.fillStyle(0x2d5a3d);
-    graphics.fillRect(50, 28, 36, 4);
-    graphics.fillRect(50, 36, 36, 4);
-    
-    graphics.fillStyle(0x8b4513);
-    graphics.fillCircle(68, 18, 14); // Hood leaning
-    graphics.fillStyle(0xfdbcb4);
-    graphics.fillCircle(68, 22, 6);
-    
-    graphics.fillStyle(0x2c3e50);
-    graphics.fillRect(66, 20, 2, 2);
-    graphics.fillRect(70, 20, 2, 2);
-    
-    // Bow in running position
-    graphics.fillStyle(0x8b4513);
-    graphics.fillRect(20, 20, 4, 44); // Bow angled
-    
-    // Quiver
-    graphics.fillStyle(0x654321);
-    graphics.fillRect(88, 28, 8, 24);
-    graphics.fillStyle(0xf1c40f);
-    graphics.fillRect(90, 30, 4, 16);
-    
-    graphics.generateTexture('archer-run', 128, 128);
-    
-    // Generate other archer animations
-    graphics.generateTexture('archer-walk', 128, 128);
-    graphics.generateTexture('archer-jump', 128, 128);
-    graphics.generateTexture('archer-attack1', 128, 128);
-    graphics.generateTexture('archer-attack2', 128, 128);
-    graphics.generateTexture('archer-attack3', 128, 128);
-    graphics.generateTexture('archer-hurt', 128, 128);
-    graphics.generateTexture('archer-dead', 128, 128);
-    graphics.generateTexture('archer-skill', 128, 128);
-    
-    // Create detailed MAGE sprites - updated to use blue colors
-    graphics.clear();
-    
-    // Mage idle pose - blue theme
-    graphics.fillStyle(0x3498db); // Blue robes instead of purple
-    graphics.fillTriangle(64, 12, 40, 96, 88, 96); // Robe body
-    graphics.fillStyle(0x2980b9); // Dark blue trim instead of dark purple
-    graphics.fillTriangle(64, 16, 44, 92, 84, 92); // Inner robe
-    
-    // Hood and face
-    graphics.fillStyle(0x2c3e50); // Dark blue hood
-    graphics.fillCircle(64, 20, 16); // Hood
-    graphics.fillStyle(0xfdbcb4); // Skin
-    graphics.fillCircle(64, 24, 8); // Face
-    
-    graphics.fillStyle(0x2c3e50); // Eyes
-    graphics.fillRect(61, 22, 2, 2);
-    graphics.fillRect(65, 22, 2, 2);
-    
-    // Staff - enhanced blue theme
-    graphics.fillStyle(0x8b4513); // Brown staff
-    graphics.fillRect(20, 12, 4, 64); // Staff shaft
-    graphics.fillStyle(0x1abc9c); // Cyan crystal instead of blue
-    graphics.fillCircle(22, 16, 6); // Crystal orb
-    graphics.fillStyle(0x85e6ff); // Light cyan glow
-    graphics.fillCircle(22, 16, 4);
-    
-    // Spell book
-    graphics.fillStyle(0x2c3e50); // Dark blue book instead of brown
-    graphics.fillRect(84, 32, 12, 16);
-    graphics.fillStyle(0x3498db); // Blue clasp instead of gold
-    graphics.fillRect(88, 36, 4, 2);
-    
-    graphics.generateTexture('mage-idle', 128, 128);
-    
-    // Mage running pose - blue theme
-    graphics.clear();
-    graphics.fillStyle(0x3498db);
-    graphics.fillTriangle(68, 12, 44, 96, 92, 96); // Robe flowing
-    graphics.fillStyle(0x2980b9);
-    graphics.fillTriangle(68, 16, 48, 92, 88, 92);
-    
-    graphics.fillStyle(0x2c3e50);
-    graphics.fillCircle(68, 18, 16); // Hood moving
-    graphics.fillStyle(0xfdbcb4);
-    graphics.fillCircle(68, 22, 8);
-    
-    graphics.fillStyle(0x2c3e50);
-    graphics.fillRect(65, 20, 2, 2);
-    graphics.fillRect(69, 20, 2, 2);
-    
-    // Staff in motion
-    graphics.fillStyle(0x8b4513);
-    graphics.fillRect(16, 16, 4, 60); // Staff angled
-    graphics.fillStyle(0x1abc9c);
-    graphics.fillCircle(18, 20, 6);
-    graphics.fillStyle(0x85e6ff);
-    graphics.fillCircle(18, 20, 4);
-    
-    // Book swaying
-    graphics.fillStyle(0x2c3e50);
-    graphics.fillRect(88, 36, 12, 16);
-    graphics.fillStyle(0x3498db);
-    graphics.fillRect(92, 40, 4, 2);
-    
-    graphics.generateTexture('mage-run', 128, 128);
-    
-    // Generate other mage animations
-    graphics.generateTexture('mage-walk', 128, 128);
-    graphics.generateTexture('mage-jump', 128, 128);
-    graphics.generateTexture('mage-attack1', 128, 128);
-    graphics.generateTexture('mage-attack2', 128, 128);
-    graphics.generateTexture('mage-attack3', 128, 128);
-    graphics.generateTexture('mage-hurt', 128, 128);
-    graphics.generateTexture('mage-dead', 128, 128);
-    graphics.generateTexture('mage-skill', 128, 128);
-    
-    graphics.destroy();
-  }
-}
 
 // Login Scene
 class LoginScene extends Phaser.Scene {
@@ -868,38 +463,88 @@ class MenuScene extends Phaser.Scene {
     this.add.rectangle(600, 300, 1200, 600, 0x1a252f);
     
     // Title
-    this.add.text(600, 80, 'KILL N\' KEEP', {
+    this.add.text(600, 60, 'KILL N\' KEEP', {
       fontSize: '48px',
       fill: '#ecf0f1',
       fontFamily: 'Courier New'
     }).setOrigin(0.5);
     
-    this.add.text(600, 120, 'Defend the Treasure!', {
+    this.add.text(600, 100, 'Defend the Treasure!', {
       fontSize: '20px',
       fill: '#95a5a6',
       fontFamily: 'Courier New'
     }).setOrigin(0.5);
 
+    this.createMapSelection();
     this.createClassSelection();
     this.createButtons();
   }
 
+  createMapSelection() {
+    this.add.text(600, 140, 'Choose Your Map:', {
+      fontSize: '20px',
+      fill: '#ecf0f1',
+      fontFamily: 'Courier New'
+    }).setOrigin(0.5);
+
+    this.mapButtons = [];
+    this.createMapButton(300, 190, 'GRASSLAND', 'grassland', 0x228b22, 
+      'Green Fields\nNatural terrain\nBalanced gameplay');
+    this.createMapButton(600, 190, 'DESERT', 'desert', 0xdaa520,
+      'Sandy Dunes\nHarsh environment\nOpen spaces');
+    this.createMapButton(900, 190, 'CASTLE', 'castle', 0x696969,
+      'Stone Fortress\nMedieval setting\nDefensive walls');
+  }
+
+  createMapButton(x, y, name, mapName, color, description) {
+    const button = this.add.rectangle(x, y, 140, 80, color);
+    const text = this.add.text(x, y - 20, name, {
+      fontSize: '14px',
+      fill: '#ffffff',
+      fontFamily: 'Courier New'
+    }).setOrigin(0.5);
+
+    const desc = this.add.text(x, y + 10, description, {
+      fontSize: '9px',
+      fill: '#ffffff',
+      fontFamily: 'Courier New',
+      align: 'center'
+    }).setOrigin(0.5);
+
+    button.setInteractive({ useHandCursor: true });
+    
+    button.on('pointerdown', () => {
+      window.GameState.selectedMap = mapName;
+      
+      this.mapButtons.forEach(btn => btn.setStrokeStyle(0));
+      button.setStrokeStyle(2, 0xffffff);
+      
+      console.log('Selected map:', mapName);
+    });
+
+    this.mapButtons.push(button);
+    
+    if (mapName === 'grassland') {
+      button.setStrokeStyle(2, 0xffffff);
+    }
+  }
+
   createClassSelection() {
-    this.add.text(600, 200, 'Choose Your Class:', {
-      fontSize: '24px',
+    this.add.text(600, 280, 'Choose Your Class:', {
+      fontSize: '20px',
       fill: '#ecf0f1',
       fontFamily: 'Courier New'
     }).setOrigin(0.5);
 
     this.classButtons = [];
-    this.createClassButton(200, 300, 'KNIGHT', 'knight', 0xe74c3c, 
+    this.createClassButton(200, 350, 'KNIGHT', 'knight', 0xe74c3c, 
       'Tank Fighter\nMelee Combat\nHigh Health');
-    this.createClassButton(600, 300, 'ARCHER', 'archer', 0x27ae60,
+    this.createClassButton(600, 350, 'ARCHER', 'archer', 0x27ae60,
       'Ranged DPS\nBow Shooting\nHigh Speed');
-    this.createClassButton(1000, 300, 'MAGE', 'mage', 0x3498db,
+    this.createClassButton(1000, 350, 'MAGE', 'mage', 0x3498db,
       'Magic DPS\nFireball Magic\nHigh Damage');
 
-    this.add.text(600, 380, 'Controls: WASD = Move, Mouse Click = Attack, SPACE = Special Skill', {
+    this.add.text(600, 430, 'Controls: WASD = Move, Mouse Click = Attack, SPACE = Special Skill', {
       fontSize: '14px',
       fill: '#95a5a6',
       fontFamily: 'Courier New'
@@ -940,8 +585,8 @@ class MenuScene extends Phaser.Scene {
   }
 
   createButtons() {
-    const startButton = this.add.rectangle(600, 450, 200, 50, 0x2ecc71);
-    this.add.text(600, 450, 'START GAME', {
+    const startButton = this.add.rectangle(600, 500, 200, 50, 0x2ecc71);
+    this.add.text(600, 500, 'START GAME', {
       fontSize: '20px',
       fill: '#ffffff',
       fontFamily: 'Courier New'
@@ -950,8 +595,8 @@ class MenuScene extends Phaser.Scene {
     startButton.setInteractive({ useHandCursor: true });
     startButton.on('pointerdown', () => this.startGame());
 
-    const leaderboardButton = this.add.rectangle(400, 450, 150, 40, 0x3498db);
-    this.add.text(400, 450, 'LEADERBOARD', {
+    const leaderboardButton = this.add.rectangle(400, 500, 150, 40, 0x3498db);
+    this.add.text(400, 500, 'LEADERBOARD', {
       fontSize: '14px',
       fill: '#ffffff',
       fontFamily: 'Courier New'
@@ -1321,6 +966,178 @@ class GameScene extends Phaser.Scene {
     graphics.fillRect(22, 20, 4, 8);
     graphics.generateTexture('treasure', 48, 48);
     
+    // Create KNIGHT sprites
+    graphics.clear();
+    graphics.fillStyle(0x95a5a6); // Silver armor
+    graphics.fillRect(48, 16, 32, 80); // Body
+    graphics.fillRect(40, 24, 48, 16); // Shoulders
+    graphics.fillStyle(0xf4d03f); // Gold trim
+    graphics.fillRect(46, 32, 36, 4); // Chest plate trim
+    graphics.fillRect(58, 20, 12, 8); // Helmet trim
+    graphics.fillStyle(0x2c3e50); // Dark visor
+    graphics.fillRect(60, 24, 8, 4);
+    graphics.fillStyle(0x8b4513); // Brown handle
+    graphics.fillRect(16, 32, 4, 32); // Sword handle
+    graphics.fillStyle(0xc0c0c0); // Silver blade
+    graphics.fillRect(12, 16, 12, 24); // Sword blade
+    graphics.fillStyle(0xe74c3c); // Red cape
+    graphics.fillTriangle(80, 24, 96, 32, 80, 64);
+    graphics.generateTexture('knight-idle', 128, 128);
+    
+    // Knight running pose
+    graphics.clear();
+    graphics.fillStyle(0x95a5a6);
+    graphics.fillRect(52, 16, 32, 80); // Body leaning forward
+    graphics.fillRect(44, 24, 48, 16); // Shoulders
+    graphics.fillStyle(0xf4d03f);
+    graphics.fillRect(50, 32, 36, 4);
+    graphics.fillRect(62, 20, 12, 8);
+    graphics.fillStyle(0x2c3e50);
+    graphics.fillRect(64, 24, 8, 4);
+    graphics.fillStyle(0x8b4513);
+    graphics.fillRect(20, 28, 4, 32); // Sword angled
+    graphics.fillStyle(0xc0c0c0);
+    graphics.fillRect(16, 12, 12, 24);
+    graphics.fillStyle(0xe74c3c);
+    graphics.fillTriangle(84, 20, 100, 28, 84, 60); // Cape flowing
+    graphics.generateTexture('knight-run', 128, 128);
+    
+    // Create other knight animation frames
+    graphics.generateTexture('knight-walk', 128, 128);
+    graphics.generateTexture('knight-jump', 128, 128);
+    graphics.generateTexture('knight-attack1', 128, 128);
+    graphics.generateTexture('knight-attack2', 128, 128);
+    graphics.generateTexture('knight-attack3', 128, 128);
+    graphics.generateTexture('knight-hurt', 128, 128);
+    graphics.generateTexture('knight-dead', 128, 128);
+    graphics.generateTexture('knight-runattack', 128, 128);
+    graphics.generateTexture('knight-protect', 128, 128);
+    
+    // Create ARCHER sprites
+    graphics.clear();
+    graphics.fillStyle(0x27ae60); // Green leather armor
+    graphics.fillRect(48, 20, 32, 76); // Body
+    graphics.fillRect(44, 24, 40, 12); // Shoulders
+    graphics.fillStyle(0x2d5a3d); // Dark green trim
+    graphics.fillRect(46, 28, 36, 4); // Chest trim
+    graphics.fillRect(46, 36, 36, 4); // Belt
+    graphics.fillStyle(0x8b4513); // Brown hood
+    graphics.fillCircle(64, 20, 14); // Hood
+    graphics.fillStyle(0xfdbcb4); // Skin tone
+    graphics.fillCircle(64, 24, 6); // Face
+    graphics.fillStyle(0x2c3e50); // Dark eyes
+    graphics.fillRect(62, 22, 2, 2);
+    graphics.fillRect(66, 22, 2, 2);
+    // Bow
+    graphics.fillStyle(0x8b4513); // Brown bow
+    graphics.fillRect(24, 16, 4, 48); // Bow staff
+    // Quiver
+    graphics.fillStyle(0x654321); // Brown quiver
+    graphics.fillRect(84, 28, 8, 24);
+    graphics.fillStyle(0xf1c40f); // Yellow arrows
+    graphics.fillRect(86, 30, 4, 16);
+    graphics.generateTexture('archer-idle', 128, 128);
+    
+    // Archer running pose
+    graphics.clear();
+    graphics.fillStyle(0x27ae60);
+    graphics.fillRect(52, 20, 32, 76); // Body leaning forward
+    graphics.fillRect(48, 24, 40, 12);
+    graphics.fillStyle(0x2d5a3d);
+    graphics.fillRect(50, 28, 36, 4);
+    graphics.fillRect(50, 36, 36, 4);
+    graphics.fillStyle(0x8b4513);
+    graphics.fillCircle(68, 18, 14); // Hood leaning
+    graphics.fillStyle(0xfdbcb4);
+    graphics.fillCircle(68, 22, 6);
+    graphics.fillStyle(0x2c3e50);
+    graphics.fillRect(66, 20, 2, 2);
+    graphics.fillRect(70, 20, 2, 2);
+    // Bow in running position
+    graphics.fillStyle(0x8b4513);
+    graphics.fillRect(20, 20, 4, 44); // Bow angled
+    // Quiver
+    graphics.fillStyle(0x654321);
+    graphics.fillRect(88, 28, 8, 24);
+    graphics.fillStyle(0xf1c40f);
+    graphics.fillRect(90, 30, 4, 16);
+    graphics.generateTexture('archer-run', 128, 128);
+    
+    // Generate other archer animations
+    graphics.generateTexture('archer-walk', 128, 128);
+    graphics.generateTexture('archer-jump', 128, 128);
+    graphics.generateTexture('archer-attack1', 128, 128);
+    graphics.generateTexture('archer-attack2', 128, 128);
+    graphics.generateTexture('archer-attack3', 128, 128);
+    graphics.generateTexture('archer-hurt', 128, 128);
+    graphics.generateTexture('archer-dead', 128, 128);
+    graphics.generateTexture('archer-skill', 128, 128);
+    
+    // Create MAGE sprites
+    graphics.clear();
+    graphics.fillStyle(0x3498db); // Blue robes
+    graphics.fillTriangle(64, 12, 40, 96, 88, 96); // Robe body
+    graphics.fillStyle(0x2980b9); // Dark blue trim
+    graphics.fillTriangle(64, 16, 44, 92, 84, 92); // Inner robe
+    // Hood and face
+    graphics.fillStyle(0x2c3e50); // Dark blue hood
+    graphics.fillCircle(64, 20, 16); // Hood
+    graphics.fillStyle(0xfdbcb4); // Skin
+    graphics.fillCircle(64, 24, 8); // Face
+    graphics.fillStyle(0x2c3e50); // Eyes
+    graphics.fillRect(61, 22, 2, 2);
+    graphics.fillRect(65, 22, 2, 2);
+    // Staff
+    graphics.fillStyle(0x8b4513); // Brown staff
+    graphics.fillRect(20, 12, 4, 64); // Staff shaft
+    graphics.fillStyle(0x1abc9c); // Cyan crystal
+    graphics.fillCircle(22, 16, 6); // Crystal orb
+    graphics.fillStyle(0x85e6ff); // Light cyan glow
+    graphics.fillCircle(22, 16, 4);
+    // Spell book
+    graphics.fillStyle(0x2c3e50); // Dark blue book
+    graphics.fillRect(84, 32, 12, 16);
+    graphics.fillStyle(0x3498db); // Blue clasp
+    graphics.fillRect(88, 36, 4, 2);
+    graphics.generateTexture('mage-idle', 128, 128);
+    
+    // Mage running pose
+    graphics.clear();
+    graphics.fillStyle(0x3498db);
+    graphics.fillTriangle(68, 12, 44, 96, 92, 96); // Robe flowing
+    graphics.fillStyle(0x2980b9);
+    graphics.fillTriangle(68, 16, 48, 92, 88, 92);
+    graphics.fillStyle(0x2c3e50);
+    graphics.fillCircle(68, 18, 16); // Hood moving
+    graphics.fillStyle(0xfdbcb4);
+    graphics.fillCircle(68, 22, 8);
+    graphics.fillStyle(0x2c3e50);
+    graphics.fillRect(65, 20, 2, 2);
+    graphics.fillRect(69, 20, 2, 2);
+    // Staff in motion
+    graphics.fillStyle(0x8b4513);
+    graphics.fillRect(16, 16, 4, 60); // Staff angled
+    graphics.fillStyle(0x1abc9c);
+    graphics.fillCircle(18, 20, 6);
+    graphics.fillStyle(0x85e6ff);
+    graphics.fillCircle(18, 20, 4);
+    // Book swaying
+    graphics.fillStyle(0x2c3e50);
+    graphics.fillRect(88, 36, 12, 16);
+    graphics.fillStyle(0x3498db);
+    graphics.fillRect(92, 40, 4, 2);
+    graphics.generateTexture('mage-run', 128, 128);
+    
+    // Generate other mage animations
+    graphics.generateTexture('mage-walk', 128, 128);
+    graphics.generateTexture('mage-jump', 128, 128);
+    graphics.generateTexture('mage-attack1', 128, 128);
+    graphics.generateTexture('mage-attack2', 128, 128);
+    graphics.generateTexture('mage-attack3', 128, 128);
+    graphics.generateTexture('mage-hurt', 128, 128);
+    graphics.generateTexture('mage-dead', 128, 128);
+    graphics.generateTexture('mage-skill', 128, 128);
+    
     // Create ARROW sprite (simple arrow shape)
     graphics.clear();
     graphics.fillStyle(0x8b4513); // Brown shaft
@@ -1353,7 +1170,7 @@ class GameScene extends Phaser.Scene {
     graphics.generateTexture('energy-orb', 32, 32);
     
     graphics.destroy();
-    console.log('Game sprites created');
+    console.log('All game sprites created');
   }
 
   createKnightAnimations() {
@@ -1364,7 +1181,7 @@ class GameScene extends Phaser.Scene {
         this.anims.create({
           key: `${className}-idle-anim`,
           frames: [{ key: `${className}-idle` }],
-          frameRate: 1,
+          frameRate: 2,
           repeat: -1
         });
       }
@@ -1387,7 +1204,8 @@ class GameScene extends Phaser.Scene {
             key: animKey,
             frames: [{ key: `${className}-attack${i}` }],
             frameRate: 10,
-            repeat: 0
+            repeat: 0,
+            duration: 300
           });
         }
       }
@@ -1397,25 +1215,64 @@ class GameScene extends Phaser.Scene {
   }
 
   createWorld() {
-    // Create the game world background
-    this.add.rectangle(600, 300, 1200, 600, 0x228b22); // Green grass background
+    // Initialize map generator
+    this.mapGenerator = new MapGenerator(this);
+    
+    // Create map background based on selected map
+    const selectedMap = window.GameState.selectedMap || 'grassland';
+    
+    switch(selectedMap) {
+      case 'grassland':
+        this.createGrasslandMap();
+        break;
+      case 'desert':
+        this.createDesertMap();
+        break;
+      case 'castle':
+        this.createCastleMap();
+        break;
+      default:
+        this.createGrasslandMap();
+    }
     
     // Set up physics world
-    this.physics.world.gravity.y = 0; // Top-down game, no gravity
-    
-    // Add some visual elements to make the world more interesting
-    // Add some trees/obstacles (optional decorative elements)
-    for (let i = 0; i < 8; i++) {
-      const x = Phaser.Math.Between(100, 1100);
-      const y = Phaser.Math.Between(100, 500);
-      
-      // Avoid placing decorations too close to the center (treasure area)
-      if (Phaser.Math.Distance.Between(x, y, 600, 300) > 150) {
-        // Simple tree representation
-        this.add.circle(x, y, 20, 0x8b4513); // Brown trunk
-        this.add.circle(x, y - 15, 25, 0x228b22); // Green leaves
-      }
-    }
+    this.physics.world.gravity.y = 0;
+  }
+
+  createGrasslandMap() {
+    this.mapGenerator.createGrassBackground();
+    this.createGrasslandDecorations();
+  }
+
+  createDesertMap() {
+    this.mapGenerator.createDesertBackground();
+    this.createDesertDecorations();
+  }
+
+  createCastleMap() {
+    this.mapGenerator.createCastleBackground();
+    this.createCastleDecorations();
+  }
+
+  createGrasslandDecorations() {
+    this.mapGenerator.createBushes();
+    this.mapGenerator.createRocks();
+    this.mapGenerator.createFlowers();
+    this.mapGenerator.createTrees();
+  }
+
+  createDesertDecorations() {
+    this.mapGenerator.createCacti();
+    this.mapGenerator.createDesertRocks();
+    this.mapGenerator.createSandDunes();
+    this.mapGenerator.createOasis();
+  }
+
+  createCastleDecorations() {
+    this.mapGenerator.createTorches();
+    this.mapGenerator.createBanners();
+    this.mapGenerator.createStoneBlocks();
+    this.mapGenerator.createCastleWalls();
   }
 
   createTreasure() {
