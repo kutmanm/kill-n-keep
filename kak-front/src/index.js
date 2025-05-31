@@ -943,10 +943,22 @@ class GameScene extends Phaser.Scene {
   createSprites() {
     const graphics = this.add.graphics();
     
-    // Create ENEMY sprite (red circle)
+    // Create ENEMY sprite (red circle) - 2 HP, normal speed
     graphics.fillStyle(0xff0000);
     graphics.fillCircle(16, 16, 12);
     graphics.generateTexture('enemy', 32, 32);
+    
+    // Create TRIANGLE ENEMY sprite (red triangle) - 1 HP, 2x speed
+    graphics.clear();
+    graphics.fillStyle(0xff4500); // Orange-red for triangle
+    graphics.fillTriangle(16, 4, 4, 28, 28, 28);
+    graphics.generateTexture('enemy-triangle', 32, 32);
+    
+    // Create SQUARE ENEMY sprite (red square) - 3 HP, 20% slower speed
+    graphics.clear();
+    graphics.fillStyle(0x8b0000); // Dark red for square
+    graphics.fillRect(6, 6, 20, 20);
+    graphics.generateTexture('enemy-square', 32, 32);
     
     // Create BOSS sprite (larger red circle with black outline)
     graphics.clear();
@@ -1451,14 +1463,18 @@ class GameScene extends Phaser.Scene {
       enemy.isBoss = true;
       this.createBossHealthBar(enemy);
     } else {
-      enemy = this.physics.add.sprite(x, y, 'enemy');
+      // Select enemy type based on random or backend data
+      const enemyType = enemyData.enemyType || this.getRandomEnemyType();
+      const spriteKey = this.getEnemySpriteKey(enemyType);
+      enemy = this.physics.add.sprite(x, y, spriteKey);
+      enemy.enemyType = enemyType;
     }
     
     enemy.setCollideWorldBounds(true);
-    enemy.health = enemyData.health;
-    enemy.maxHealth = enemyData.health;
-    enemy.speed = enemyData.speed;
-    enemy.damage = enemyData.damage;
+    enemy.health = enemyData.health || this.getEnemyHealth(enemy.enemyType);
+    enemy.maxHealth = enemy.health;
+    enemy.speed = enemyData.speed || this.getEnemySpeed(enemy.enemyType);
+    enemy.damage = enemyData.damage || 15;
     enemy.setDrag(150);
     enemy.lastAttack = 0;
     enemy.attackCooldown = 2000;
@@ -1471,7 +1487,41 @@ class GameScene extends Phaser.Scene {
     this.waveEnemiesSpawned++;
     this.waveEnemiesRemaining++;
     
-    console.log(`Spawned ${enemyData.type} with ${enemyData.health} health and ${enemyData.speed} speed`);
+    console.log(`Spawned ${enemyData.type || enemy.enemyType} with ${enemy.health} HP and ${enemy.speed} speed`);
+  }
+
+  getRandomEnemyType() {
+    const types = ['circle', 'triangle', 'square'];
+    return types[Phaser.Math.Between(0, types.length - 1)];
+  }
+
+  getEnemySpriteKey(enemyType) {
+    switch(enemyType) {
+      case 'triangle': return 'enemy-triangle';
+      case 'square': return 'enemy-square';
+      case 'circle':
+      default: return 'enemy';
+    }
+  }
+
+  getEnemyHealth(enemyType) {
+    // Simple base health values - no wave scaling for clarity
+    switch(enemyType) {
+      case 'triangle': return 1; // 1 HP - dies in 1 hit
+      case 'square': return 3;   // 3 HP - dies in 3 hits  
+      case 'circle':
+      default: return 2;         // 2 HP - dies in 2 hits
+    }
+  }
+
+  getEnemySpeed(enemyType) {
+    const baseSpeed = 50 + (window.GameState.currentWave * 3); // Base speed scaling
+    switch(enemyType) {
+      case 'triangle': return baseSpeed * 2; // 2x speed
+      case 'square': return baseSpeed * 0.8; // 20% slower
+      case 'circle':
+      default: return baseSpeed; // Normal speed
+    }
   }
   
   spawnLocalEnemy() {
@@ -1500,22 +1550,27 @@ class GameScene extends Phaser.Scene {
       enemy.setScale(1.2);
       enemy.isBoss = true;
       this.createBossHealthBar(enemy);
+      enemy.enemyType = 'boss';
     } else {
-      enemy = this.physics.add.sprite(x, y, 'enemy');
+      // Randomly select enemy type
+      const enemyType = this.getRandomEnemyType();
+      const spriteKey = this.getEnemySpriteKey(enemyType);
+      enemy = this.physics.add.sprite(x, y, spriteKey);
+      enemy.enemyType = enemyType;
     }
     
     enemy.setCollideWorldBounds(true);
     
-    // Set enemy stats based on wave
-    const waveLevel = Math.floor(window.GameState.currentWave / 5);
+    // Set enemy stats based on type and wave
     if (enemy.isBoss) {
+      const waveLevel = Math.floor(window.GameState.currentWave / 5);
       enemy.health = 200 + (waveLevel * 100);
       enemy.speed = 40 + (waveLevel * 10);
       enemy.damage = 30 + (waveLevel * 5);
       enemy.setTint(0xff0000);
     } else {
-      enemy.health = 20 + (window.GameState.currentWave * 5);
-      enemy.speed = 50 + (window.GameState.currentWave * 5);
+      enemy.health = this.getEnemyHealth(enemy.enemyType);
+      enemy.speed = this.getEnemySpeed(enemy.enemyType);
       enemy.damage = 15;
     }
     
@@ -1528,7 +1583,7 @@ class GameScene extends Phaser.Scene {
     this.waveEnemiesSpawned++;
     this.waveEnemiesRemaining++;
     
-    console.log(`Spawned ${enemy.isBoss ? 'boss' : 'enemy'} (${this.waveEnemiesSpawned}/${this.waveTargetEnemies}) with ${enemy.health} health`);
+    console.log(`Spawned ${enemy.enemyType} (${this.waveEnemiesSpawned}/${this.waveTargetEnemies}) with ${enemy.health} HP and ${enemy.speed} speed`);
   }
 
   createBossHealthBar(boss) {
@@ -2120,7 +2175,6 @@ class GameScene extends Phaser.Scene {
       this.mouseX, this.mouseY
     );
     
-    
     const arcAngle = Math.PI / 1.5; // Wider attack arc
     
     this.enemies.children.entries.forEach(enemy => {
@@ -2231,7 +2285,7 @@ class GameScene extends Phaser.Scene {
           
           if (distance < nearestDistance) {
             nearestDistance = distance;
-                       nearestEnemy = enemy;
+            nearestEnemy = enemy;
           }
         });
       }
