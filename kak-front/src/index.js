@@ -2115,7 +2115,7 @@ class GameScene extends Phaser.Scene {
     const arcCenterX = slashX + Math.cos(angleToMouse) * 20;
     const arcCenterY = slashY + Math.sin(angleToMouse) * 20;
     
-    // Заполняем дугу множественными линиями для создания плотного эффекта
+    // Заполняем дугу множественными линими для создания плотного эффекта
     for (let i = 0; i < 12; i++) {
       const radius = 45 + i * 4; // От 45 до 89 пикселей
       const alpha = 0.9 - i * 0.05; // Постепенно уменьшаем прозрачность
@@ -2821,17 +2821,8 @@ class UIScene extends Phaser.Scene {
       fontFamily: 'Courier New'
     });
     
-    // Show offline mode indicator
-    if (window.GameState.isOfflineMode) {
-      this.offlineText = this.add.text(20, 170, 'OFFLINE MODE', {
-        fontSize: '12px',
-        fill: '#e74c3c',
-        fontFamily: 'Courier New'
-      });
-    }
-    
     // Controls reminder
-    this.controlsText = this.add.text(20, 200, 'WASD: Move | Click: Attack | SPACE: Special', {
+    this.controlsText = this.add.text(20, 170, 'WASD: Move | Click: Attack | SPACE: Special', {
       fontSize: '12px',
       fill: '#95a5a6',
       fontFamily: 'Courier New'
@@ -2869,11 +2860,6 @@ class UIScene extends Phaser.Scene {
         this.skillCooldownText.setText(`Special: ${seconds}s`);
         this.skillCooldownText.setFill('#ff9900');
       }
-    }
-    
-    // Show or hide offline mode indicator
-    if (this.offlineText) {
-      this.offlineText.setVisible(window.GameState.isOfflineMode);
     }
   }
 }

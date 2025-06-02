@@ -37,14 +37,11 @@ export const API = {
   },
   
   getMockResponse(endpoint, method, data) {
-    console.log('🔌 Backend unavailable - using offline mode');
-    
     switch(endpoint) {
       case '/game/start':
         return { 
           success: true, 
-          sessionId: 'offline-' + Date.now(),
-          message: 'Playing in offline mode' 
+          sessionId: 'offline-' + Date.now()
         };
       case '/wave/start':
         // Mock wave data generation
