@@ -1941,6 +1941,16 @@ class GameScene extends Phaser.Scene {
   startLocalWave() {
     console.log(`Starting local wave ${window.GameState.currentWave}`);
     
+    // Убедиться что предыдущая волна полностью завершена
+    if (this.enemySpawnTimer) {
+      this.enemySpawnTimer.destroy();
+      this.enemySpawnTimer = null;
+    }
+    
+    // Очистить всех врагов с предыдущей волны
+    this.enemies.clear(true, true);
+    
+    // Сбросить переменные волны
     this.waveActive = true;
     this.waveEnemiesSpawned = 0;
     this.waveEnemiesRemaining = 0;
@@ -1950,6 +1960,8 @@ class GameScene extends Phaser.Scene {
     const waveMultiplier = window.GameState.currentWave;
     this.waveTargetEnemies = baseEnemies + Math.floor(waveMultiplier * 1.5);
     
+    console.log(`Wave ${window.GameState.currentWave} will spawn ${this.waveTargetEnemies} enemies`);
+    
     // Start spawning enemies
     this.enemySpawnTimer = this.time.addEvent({
       delay: 2000, // Spawn every 2 seconds
@@ -1957,8 +1969,6 @@ class GameScene extends Phaser.Scene {
       callbackScope: this,
       repeat: this.waveTargetEnemies - 1
     });
-    
-    console.log(`Wave ${window.GameState.currentWave} will spawn ${this.waveTargetEnemies} enemies`);
   }
   
   spawnEnemy() {
@@ -2500,41 +2510,75 @@ class GameScene extends Phaser.Scene {
     // Remove enemy
     enemy.destroy();
     
-    console.log(`Enemy killed! Score: ${window.GameState.score}, Remaining: ${this.waveEnemiesRemaining}`);
+    console.log(`Enemy killed! Score: ${window.GameState.score}, Remaining: ${this.waveEnemiesRemaining}, Spawned: ${this.waveEnemiesSpawned}/${this.waveTargetEnemies}`);
     
-    // Check if wave is complete
-    if (this.waveEnemiesRemaining <= 0 && this.waveEnemiesSpawned >= this.waveTargetEnemies) {
+    // Check if wave is complete - исправленная логика
+    if (this.waveActive && this.waveEnemiesRemaining <= 0 && this.waveEnemiesSpawned >= this.waveTargetEnemies) {
       this.completeWave();
     }
   }
   
   completeWave() {
     console.log(`Wave ${window.GameState.currentWave} completed!`);
+    console.log(`Final wave stats - Spawned: ${this.waveEnemiesSpawned}, Target: ${this.waveTargetEnemies}, Remaining: ${this.waveEnemiesRemaining}`);
     
+    // Остановить активную волну
     this.waveActive = false;
+    
+    // Очистить таймер спавна врагов если он еще активен
+    if (this.enemySpawnTimer) {
+      this.enemySpawnTimer.destroy();
+      this.enemySpawnTimer = null;
+    }
+    
+    // Увеличить номер волны
     window.GameState.currentWave++;
     
-    // Show wave complete message
+    // Показать сообщение о завершении волны
     const message = this.add.text(800, 200, 'WAVE COMPLETE!', {
       fontSize: '32px',
       fill: '#00ff00',
       fontFamily: 'Courier New'
     }).setOrigin(0.5).setDepth(1000);
     
+    // Показать бонус за волну
+    const bonusMessage = this.add.text(800, 250, `Bonus: +${50 * (window.GameState.currentWave - 1)} points`, {
+      fontSize: '20px',
+      fill: '#f39c12',
+      fontFamily: 'Courier New'
+    }).setOrigin(0.5).setDepth(1000);
+    
+    // Добавить бонус к счету
+    window.GameState.score += 50 * (window.GameState.currentWave - 1);
+    
     // Fade out message
     this.tweens.add({
-      targets: message,
+      targets: [message, bonusMessage],
       alpha: 0,
       duration: 2000,
-      onComplete: () => message.destroy()
+      onComplete: () => {
+        message.destroy();
+        bonusMessage.destroy();
+      }
     });
     
-    // Start next wave after delay
+    // Полностью сбросить переменные волны перед началом новой
     this.time.delayedCall(3000, () => {
+      // Сброс всех переменных волны
+      this.waveEnemiesSpawned = 0;
+      this.waveEnemiesRemaining = 0;
+      this.waveTargetEnemies = 0;
+      
+      // Очистить всех оставшихся врагов (на всякий случай)
+      this.enemies.clear(true, true);
+      
+      console.log(`Starting preparation for wave ${window.GameState.currentWave}`);
+      
+      // Запустить новую волну
       this.startWave();
     });
   }
-  
+
   createHitEffect(x, y, color) {
     const effect = this.add.circle(x, y, 20, color === '#ffff00' ? 0xffff00 : 0xff0000, 0.8);
     effect.setDepth(100);
@@ -2681,10 +2725,17 @@ class GameScene extends Phaser.Scene {
         this.createHitEffect(this.treasure.x, this.treasure.y, '#ff0000');
         // Добавляем тряску экрана при уроне сундуку
         this.cameras.main.shake(150, 0.02);
-        enemy.destroy();
-        this.waveEnemiesRemaining--;
         
-        console.log(`Treasure damaged! Health: ${this.treasure.health}`);
+        // Remove enemy from wave count properly
+        this.waveEnemiesRemaining--;
+        enemy.destroy();
+        
+        console.log(`Treasure damaged! Health: ${this.treasure.health}, Enemies remaining: ${this.waveEnemiesRemaining}`);
+        
+        // Check wave completion after enemy reaches treasure
+        if (this.waveActive && this.waveEnemiesRemaining <= 0 && this.waveEnemiesSpawned >= this.waveTargetEnemies) {
+          this.completeWave();
+        }
         
         if (this.treasure.health <= 0) {
           this.gameOver();
@@ -2710,13 +2761,13 @@ class GameScene extends Phaser.Scene {
         // Добавляем тряску экрана при уроне игроку
         this.cameras.main.shake(120, 0.015);
         
-        // Push enemy away slightly
+        // Push enemy away slightly instead of destroying it
         const pushAngle = Phaser.Math.Angle.Between(
           this.player.x, this.player.y,
           enemy.x, enemy.y
         );
-        enemy.x += Math.cos(pushAngle) * 20;
-        enemy.y += Math.sin(pushAngle) * 20;
+        enemy.x += Math.cos(pushAngle) * 30;
+        enemy.y += Math.sin(pushAngle) * 30;
         
         console.log(`Player damaged! Health: ${this.player.health}`);
         
