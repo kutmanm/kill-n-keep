@@ -1,5 +1,3 @@
-package com.example.demo.controller;
-
 import org.springframework.web.bind.annotation.*;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.HttpStatus;
@@ -10,9 +8,9 @@ import java.util.*;
 @CrossOrigin(origins = "*")
 public class GameController {
     
-    private Map<String, Object> sessions = new HashMap<>();
+    private Map<String, Map<String, Object>> sessions = new HashMap<>();
     private List<Map<String, Object>> leaderboard = new ArrayList<>();
-    private Map<String, Map<String, Object>> waveData = new HashMap<>(); // Store wave data per session
+    private Map<String, Map<String, Object>> waveData = new HashMap<>();
     
     @PostMapping("/game/start")
     public ResponseEntity<?> startGame(@RequestBody Map<String, String> request) {
@@ -26,23 +24,23 @@ public class GameController {
             }
             
             String sessionId = "session_" + System.currentTimeMillis();
-            sessions.put(sessionId, Map.of(
-                "nickname", nickname,
-                "startTime", System.currentTimeMillis(),
-                "score", 0,
-                "wave", 1,
-                "treasureHealth", 100,
-                "playerHealth", 150
-            ));
+            Map<String, Object> sessionData = new HashMap<>();
+            sessionData.put("nickname", nickname);
+            sessionData.put("startTime", System.currentTimeMillis());
+            sessionData.put("score", 0);
+            sessionData.put("wave", 1);
+            sessionData.put("treasureHealth", 100);
+            sessionData.put("playerHealth", 150);
+            sessions.put(sessionId, sessionData);
             
             // Initialize wave data for this session
-            waveData.put(sessionId, Map.of(
-                "currentWave", 1,
-                "waveActive", false,
-                "enemiesSpawned", 0,
-                "enemiesKilled", 0,
-                "waveStartTime", 0L
-            ));
+            Map<String, Object> waveInfo = new HashMap<>();
+            waveInfo.put("currentWave", 1);
+            waveInfo.put("waveActive", false);
+            waveInfo.put("enemiesSpawned", 0);
+            waveInfo.put("enemiesKilled", 0);
+            waveInfo.put("waveStartTime", 0L);
+            waveData.put(sessionId, waveInfo);
             
             return ResponseEntity.ok(Map.of(
                 "success", true,
@@ -73,9 +71,9 @@ public class GameController {
             // Calculate wave parameters
             int waveNumber = currentWave != null ? currentWave : 1;
             int baseEnemies = 3;
-            int enemyCount = baseEnemies + (waveNumber - 1) * 2; // 3, 5, 7, 9...
-            int spawnDelay = Math.max(800, 2000 - (waveNumber * 100)); // Faster spawning each wave
-            boolean hasBoss = waveNumber % 5 == 0; // Boss every 5 waves
+            int enemyCount = baseEnemies + (waveNumber - 1) * 2;
+            int spawnDelay = Math.max(800, 2000 - (waveNumber * 100));
+            boolean hasBoss = waveNumber % 5 == 0;
             
             Map<String, Object> waveInfo = Map.of(
                 "waveNumber", waveNumber,
@@ -87,7 +85,11 @@ public class GameController {
             );
             
             // Update wave data
-            Map<String, Object> currentWaveData = new HashMap<>(waveData.get(sessionId));
+            Map<String, Object> currentWaveData = new HashMap<>();
+            Map<String, Object> existingWaveData = waveData.get(sessionId);
+            if (existingWaveData != null) {
+                currentWaveData.putAll(existingWaveData);
+            }
             currentWaveData.put("currentWave", waveNumber);
             currentWaveData.put("waveActive", true);
             currentWaveData.put("enemiesSpawned", 0);
@@ -119,7 +121,11 @@ public class GameController {
                 ));
             }
             
-            Map<String, Object> currentWaveData = new HashMap<>(waveData.get(sessionId));
+            Map<String, Object> currentWaveData = new HashMap<>();
+            Map<String, Object> existingWaveData = waveData.get(sessionId);
+            if (existingWaveData != null) {
+                currentWaveData.putAll(existingWaveData);
+            }
             int enemiesSpawned = (Integer) currentWaveData.get("enemiesSpawned");
             currentWaveData.put("enemiesSpawned", enemiesSpawned + 1);
             waveData.put(sessionId, currentWaveData);
@@ -153,13 +159,21 @@ public class GameController {
             // Calculate score based on enemy type and wave
             int scoreGain = calculateScoreForEnemy(enemyType, currentWave);
             
-            Map<String, Object> currentWaveData = new HashMap<>(waveData.get(sessionId));
+            Map<String, Object> currentWaveData = new HashMap<>();
+            Map<String, Object> existingWaveData = waveData.get(sessionId);
+            if (existingWaveData != null) {
+                currentWaveData.putAll(existingWaveData);
+            }
             int enemiesKilled = (Integer) currentWaveData.get("enemiesKilled");
             currentWaveData.put("enemiesKilled", enemiesKilled + 1);
             waveData.put(sessionId, currentWaveData);
             
             // Update session score
-            Map<String, Object> session = new HashMap<>(sessions.get(sessionId));
+            Map<String, Object> session = new HashMap<>();
+            Map<String, Object> existingSession = sessions.get(sessionId);
+            if (existingSession != null) {
+                session.putAll(existingSession);
+            }
             int currentScore = (Integer) session.get("score");
             session.put("score", currentScore + scoreGain);
             sessions.put(sessionId, session);
@@ -194,14 +208,22 @@ public class GameController {
             int waveBonus = waveNumber * 50;
             
             // Update session
-            Map<String, Object> session = new HashMap<>(sessions.get(sessionId));
+            Map<String, Object> session = new HashMap<>();
+            Map<String, Object> existingSession = sessions.get(sessionId);
+            if (existingSession != null) {
+                session.putAll(existingSession);
+            }
             int currentScore = (Integer) session.get("score");
             session.put("score", currentScore + waveBonus);
             session.put("wave", waveNumber + 1);
             sessions.put(sessionId, session);
             
             // Update wave data
-            Map<String, Object> currentWaveData = new HashMap<>(waveData.get(sessionId));
+            Map<String, Object> currentWaveData = new HashMap<>();
+            Map<String, Object> existingWaveData = waveData.get(sessionId);
+            if (existingWaveData != null) {
+                currentWaveData.putAll(existingWaveData);
+            }
             currentWaveData.put("waveActive", false);
             currentWaveData.put("currentWave", waveNumber + 1);
             waveData.put(sessionId, currentWaveData);
